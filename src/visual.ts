@@ -10,6 +10,9 @@ import DataView = powerbiVisualsApi.DataView;
 import ISelectionManager = powerbiVisualsApi.extensibility.ISelectionManager;
 import ISelectionId = powerbiVisualsApi.visuals.ISelectionId;
 import markerIcon from 'leaflet/dist/images/marker-icon.png';
+import pinNegative from '../assets/markers/pin-negative.svg'
+import pinNot from '../assets/markers/pin-not.svg'
+import pinPositive from '../assets/markers/pin-positive.svg'
 
 export class Visual implements IVisual {
     private target: HTMLElement;
@@ -37,15 +40,7 @@ export class Visual implements IVisual {
             attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         }).addTo(this.map);
 
-        const DefaultIcon = L.icon({
-            iconUrl: markerIcon,
-            iconSize: [25, 41],
-            iconAnchor: [12, 41],
-            popupAnchor: [1, -34],
-            tooltipAnchor: [16, -28],
-            shadowSize: [41, 41]
-        });
-        L.Marker.prototype.options.icon = DefaultIcon;
+        
 
         this.drawnItems = new L.FeatureGroup();
         this.map.addLayer(this.drawnItems);
@@ -106,7 +101,7 @@ export class Visual implements IVisual {
     }
 
     public update(options: VisualUpdateOptions) {
-        console.log("update");
+        
 
         const dataView: DataView = options.dataViews[0];
         if (!dataView || !dataView.table || !dataView.table.columns || !dataView.table.rows) {
@@ -131,8 +126,41 @@ export class Visual implements IVisual {
         for (let i = 0; i < values.length; i++) {
             const latitude = parseFloat(values[i][0].toString());
             const longitude = parseFloat(values[i][1].toString());
+            const pest = values[i][3];
+            if(values[i][2]==null){
+                const DefaultIcon = L.icon({
+                    iconUrl: pinNot,
+                    iconSize: [25, 41],
+                    iconAnchor: [12, 41],
+                    popupAnchor: [1, -34],
+                    tooltipAnchor: [16, -28],
+                    shadowSize: [41, 41]
+                });
+                L.Marker.prototype.options.icon = DefaultIcon;
+            }else if(values[i][2]=="Negative") {
+                const DefaultIcon = L.icon({
+                    iconUrl: pinNegative,
+                    iconSize: [25, 41],
+                    iconAnchor: [12, 41],
+                    popupAnchor: [1, -34],
+                    tooltipAnchor: [16, -28],
+                    shadowSize: [41, 41]
+                });
+                L.Marker.prototype.options.icon = DefaultIcon;
+            }else{
+                const DefaultIcon = L.icon({
+                    iconUrl: pinPositive,
+                    iconSize: [25, 41],
+                    iconAnchor: [12, 41],
+                    popupAnchor: [1, -34],
+                    tooltipAnchor: [16, -28],
+                    shadowSize: [41, 41]
+                });
+                L.Marker.prototype.options.icon = DefaultIcon;
+            }
+            console.log(pest);
             const marker = L.marker([latitude, longitude]).addTo(this.map)
-                .bindPopup('A pretty CSS popup.<br> Easily customizable.');
+                .bindPopup(`Pest name: ${pest}`);
                 
                 marker.on('mouseover', ()=> {
                     console.log('hoveeeeeer')
