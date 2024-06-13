@@ -1,0 +1,48 @@
+{
+  "dataRoles": [
+    {
+      "name": "latitude",
+      "kind": "Grouping",
+      "displayName": "Latitude"
+    },
+    {
+      "name": "longitude",
+      "kind": "Grouping",
+      "displayName": "Longitude"
+    }
+  ],
+  "dataViewMappings": [
+    {
+      "conditions": [
+        {
+          "Latitude": { "max": 1 },
+          "Longitude": { "max": 1 }
+        }
+      ],
+      "table": {
+        "rows": {
+          "select": [
+            {
+              "for": {
+                "in": "latitude"
+              }
+            },
+            {
+              "for": {
+                "in": "longitude"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "objects": {},
+  "privileges": [
+    {
+      "name": "WebAccess",
+      "essential": true,
+      "parameters": ["https://*.microsoft.com", "https://*"]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "visual": {
+    "name": "leafletMapVisual",
+    "displayName": "LeafletMapVisual",
+    "guid": "leafletMapVisualD689974AB3D948E7B4B17ECA36CEEE89",
+    "visualClassName": "Visual",
+    "version": "1.0.0.0",
+    "description": "Horizon-Map",
+    "supportUrl": "https://app.powerbi.com/",
+    "gitHubUrl": ""
+  },
+  "apiVersion": "5.3.0",
+  "author": { "name": "drtech", "email": "drtechlab@gmail.com" },
+  "assets": { "icon": "assets/icon.png" },
+  "externalJS": [],
+  "style": "style/visual.less",
+  "capabilities": "capabilities.json",
+  "dependencies": null,
+  "stringResources": [],
+  "version": "1.0.0.0",
+  "externalCSS": []
+}
