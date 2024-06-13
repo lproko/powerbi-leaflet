@@ -3,7 +3,7 @@
 This the repository of creating custom visual
 Using Leaflet to build a map custom map visual for Power-BI through Node.js.
 
-![picture](https://github.com/lproko/powerbi-leaflet/tree/main/assets/screenshot.png)
+![picture](https://github.com/lproko/powerbi-leaflet/blob/main/assets/screenshot.png)
 
 # Setup Envrironment
 
