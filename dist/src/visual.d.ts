@@ -15,6 +15,6 @@ export declare class Visual implements IVisual {
     private selectionIds;
     private drawnItems;
     constructor(options: VisualConstructorOptions);
-    private updateMarkersVisibility;
     update(options: VisualUpdateOptions): void;
+    private updateMarkersVisibility;
 }

@@ -10,9 +10,9 @@ import DataView = powerbiVisualsApi.DataView;
 import ISelectionManager = powerbiVisualsApi.extensibility.ISelectionManager;
 import ISelectionId = powerbiVisualsApi.visuals.ISelectionId;
 import markerIcon from 'leaflet/dist/images/marker-icon.png';
-import pinNegative from '../assets/markers/pin-negative.svg'
-import pinNot from '../assets/markers/pin-not.svg'
-import pinPositive from '../assets/markers/pin-positive.svg'
+import pinNegative from '../assets/markers/negative.png'
+import pinNot from '../assets/markers/notavailable.png'
+import pinPositive from '../assets/markers/possitive.png'
 
 export class Visual implements IVisual {
     private target: HTMLElement;
@@ -36,8 +36,10 @@ export class Visual implements IVisual {
 
         this.map = L.map(mapElement).setView([51.505, -0.09], 2);
 
-        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+            subdomains: 'abcd',
+            maxZoom: 20
         }).addTo(this.map);
 
         
@@ -88,6 +90,79 @@ export class Visual implements IVisual {
         });
     }
 
+    
+
+    public update(options: VisualUpdateOptions) {
+        const dataView: DataView = options.dataViews[0];
+        if (!dataView || !dataView.table || !dataView.table.columns || !dataView.table.rows) {
+            return;
+        }
+    
+        const values = dataView.table.rows;
+        this.selectionIds = values.map((row, index) => {
+            return this.host.createSelectionIdBuilder()
+                .withTable(dataView.table, index)
+                .createSelectionId();
+        });
+    
+        // Clear existing markers
+        this.markers.forEach(marker => {
+            this.map.removeLayer(marker);
+        });
+        this.markers = [];
+    
+        for (let i = 0; i < values.length; i++) {
+            const latitude = parseFloat(values[i][0].toString());
+            const longitude = parseFloat(values[i][1].toString());
+            const pest = values[i][3];
+    
+            let iconUrl;
+            if (values[i][2] == null) {
+                iconUrl = pinNot;
+            } else if (values[i][2] == "Negative") {
+                iconUrl = pinNegative;
+            } else {
+                iconUrl = pinPositive;
+            }
+    
+            const icon = L.icon({
+                iconUrl: iconUrl,
+                iconSize: [25, 41],
+                iconAnchor: [12, 41],
+                popupAnchor: [1, -34],
+                tooltipAnchor: [16, -28],
+                shadowSize: [41, 41]
+            });
+    
+            const marker = L.marker([latitude, longitude], { icon: icon }).addTo(this.map)
+                .bindPopup(`Pest name: ${pest}`);
+    
+            marker.on('mouseover', () => {
+                marker.openPopup();
+            });
+    
+            marker.on('mouseout', () => {
+                marker.closePopup();
+            });
+    
+            (marker as any).options.selectionId = this.selectionIds[i];
+            this.markers.push(marker);
+    
+            marker.on('click', (event) => {
+                this.selectionManager.select(this.selectionIds[i]).then((ids: ISelectionId[]) => {
+                    if (ids.length === 0) {
+                        this.updateMarkersVisibility(this.selectionIds);
+                    } else {
+                        this.updateMarkersVisibility(ids);
+                    }
+                });
+    
+                // To prevent the default behavior of propagating the event to the map.
+                L.DomEvent.stopPropagation(event);
+            });
+        }
+    }
+    
     private updateMarkersVisibility(selectedIds: ISelectionId[]) {
         this.markers.forEach(marker => {
             if (selectedIds.length > 0 && selectedIds.indexOf(marker.options.selectionId) === -1) {
@@ -98,97 +173,5 @@ export class Visual implements IVisual {
                 }
             }
         });
-    }
-
-    public update(options: VisualUpdateOptions) {
-        
-
-        const dataView: DataView = options.dataViews[0];
-        if (!dataView || !dataView.table || !dataView.table.columns || !dataView.table.rows) {
-            return;
-        }
-
-        const values = dataView.table.rows;
-        this.selectionIds = values.map((row, index) => {
-            return this.host.createSelectionIdBuilder()
-                .withTable(dataView.table, index)
-                .createSelectionId();
-        });
-
-        this.map.eachLayer((layer) => {
-            if (layer instanceof L.Marker) {
-                this.map.removeLayer(layer);
-            }
-        });
-
-        this.markers = [];
-
-        for (let i = 0; i < values.length; i++) {
-            const latitude = parseFloat(values[i][0].toString());
-            const longitude = parseFloat(values[i][1].toString());
-            const pest = values[i][3];
-            if(values[i][2]==null){
-                const DefaultIcon = L.icon({
-                    iconUrl: pinNot,
-                    iconSize: [25, 41],
-                    iconAnchor: [12, 41],
-                    popupAnchor: [1, -34],
-                    tooltipAnchor: [16, -28],
-                    shadowSize: [41, 41]
-                });
-                L.Marker.prototype.options.icon = DefaultIcon;
-            }else if(values[i][2]=="Negative") {
-                const DefaultIcon = L.icon({
-                    iconUrl: pinNegative,
-                    iconSize: [25, 41],
-                    iconAnchor: [12, 41],
-                    popupAnchor: [1, -34],
-                    tooltipAnchor: [16, -28],
-                    shadowSize: [41, 41]
-                });
-                L.Marker.prototype.options.icon = DefaultIcon;
-            }else{
-                const DefaultIcon = L.icon({
-                    iconUrl: pinPositive,
-                    iconSize: [25, 41],
-                    iconAnchor: [12, 41],
-                    popupAnchor: [1, -34],
-                    tooltipAnchor: [16, -28],
-                    shadowSize: [41, 41]
-                });
-                L.Marker.prototype.options.icon = DefaultIcon;
-            }
-            console.log(pest);
-            const marker = L.marker([latitude, longitude]).addTo(this.map)
-                .bindPopup(`Pest name: ${pest}`);
-                
-                marker.on('mouseover', ()=> {
-                    console.log('hoveeeeeer')
-                    marker.openPopup();
-                });
-    
-                marker.on('mouseout', ()=> {
-                    console.log('ouuut')
-                    marker.closePopup();
-                });
-
-            (marker as any).options.selectionId = this.selectionIds[i];
-            this.markers.push(marker);
-
-            marker.on('click', () => {
-                this.selectionManager.select(this.selectionIds[i]).then((ids: ISelectionId[]) => {
-                    if (ids.length === 0) {
-                        this.updateMarkersVisibility(this.selectionIds);
-                    } else {
-                        this.updateMarkersVisibility(ids);
-                    }
-                });
-                
-
-                // To prevent the default behavior of propagating the event to the map.
-                L.DomEvent.stopPropagation(event);
-            });
-            
-        }
     }
 }
