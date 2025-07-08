@@ -23,14 +23,6 @@
   ],
   "dataViewMappings": [
     {
-      "conditions": [
-        {
-          "Latitude": { "max": 1 },
-          "Longitude": { "max": 1 },
-          "Color": { "max": 1 },
-          "Tooltip": { "max": 3 }
-        }
-      ],
       "table": {
         "rows": {
           "select": [
@@ -59,7 +51,28 @@
       }
     }
   ],
-  "objects": {},
+  "objects": {
+    "choroplethSettings": {
+      "displayName": "Choropleth Settings",
+      "properties": {
+        "showChoropleth": {
+          "displayName": "Show Choropleth",
+          "type": { "bool": true }
+        },
+        "colorScheme": {
+          "displayName": "Color Scheme",
+          "type": {
+            "enumeration": [
+              { "value": "YlOrRd", "displayName": "Yellow-Orange-Red" },
+              { "value": "Blues", "displayName": "Blues" },
+              { "value": "Greens", "displayName": "Greens" },
+              { "value": "Reds", "displayName": "Reds" }
+            ]
+          }
+        }
+      }
+    }
+  },
   "privileges": [
     {
       "name": "WebAccess",

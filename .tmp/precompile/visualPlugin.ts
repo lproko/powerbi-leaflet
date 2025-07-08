@@ -5,8 +5,8 @@ import VisualConstructorOptions = powerbiVisualsApi.extensibility.visual.VisualC
 import DialogConstructorOptions = powerbiVisualsApi.extensibility.visual.DialogConstructorOptions;
 var powerbiKey: any = "powerbi";
 var powerbi: any = window[powerbiKey];
-var leafletMapVisualD689974AB3D948E7B4B17ECA36CEEE89_DEBUG: IVisualPlugin = {
-    name: 'leafletMapVisualD689974AB3D948E7B4B17ECA36CEEE89_DEBUG',
+var leafletMapVisualD689974AB3D948E7B4B17ECA36CEEE89: IVisualPlugin = {
+    name: 'leafletMapVisualD689974AB3D948E7B4B17ECA36CEEE89',
     displayName: 'LeafletMapVisual',
     class: 'Visual',
     apiVersion: '5.3.0',
@@ -27,6 +27,6 @@ var leafletMapVisualD689974AB3D948E7B4B17ECA36CEEE89_DEBUG: IVisualPlugin = {
 if (typeof powerbi !== "undefined") {
     powerbi.visuals = powerbi.visuals || {};
     powerbi.visuals.plugins = powerbi.visuals.plugins || {};
-    powerbi.visuals.plugins["leafletMapVisualD689974AB3D948E7B4B17ECA36CEEE89_DEBUG"] = leafletMapVisualD689974AB3D948E7B4B17ECA36CEEE89_DEBUG;
+    powerbi.visuals.plugins["leafletMapVisualD689974AB3D948E7B4B17ECA36CEEE89"] = leafletMapVisualD689974AB3D948E7B4B17ECA36CEEE89;
 }
-export default leafletMapVisualD689974AB3D948E7B4B17ECA36CEEE89_DEBUG;
+export default leafletMapVisualD689974AB3D948E7B4B17ECA36CEEE89;

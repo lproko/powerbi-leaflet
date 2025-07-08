@@ -24,6 +24,7 @@
   "devDependencies": {
     "@types/jquery": "^3.5.30",
     "@typescript-eslint/eslint-plugin": "^5.59.11",
+    "copy-webpack-plugin": "^13.0.0",
     "css-loader": "^7.1.2",
     "eslint": "^8.42.0",
     "eslint-plugin-powerbi-visuals": "^0.8.1",
