@@ -10,15 +10,21 @@
       "kind": "Grouping",
       "displayName": "Longitude"
     },
-    {
-      "name": "pemoScore",
-      "kind": "Grouping",
-      "displayName": "Color"
-    },
+
     {
       "name": "tooltip",
       "kind": "Grouping",
       "displayName": "Tooltip"
+    },
+    {
+      "name": "choroplethTooltip",
+      "kind": "Grouping",
+      "displayName": "Choropleth Tooltip"
+    },
+    {
+      "name": "adminCode",
+      "kind": "Grouping",
+      "displayName": "Admin Code"
     }
   ],
   "dataViewMappings": [
@@ -43,7 +49,12 @@
             },
             {
               "for": {
-                "in": "pemoScore"
+                "in": "choroplethTooltip"
+              }
+            },
+            {
+              "for": {
+                "in": "adminCode"
               }
             }
           ]

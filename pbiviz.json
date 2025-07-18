@@ -2,10 +2,10 @@
   "visual": {
     "name": "leafletMapVisual",
     "displayName": "LeafletMapVisual",
-    "guid": "leafletMapVisualD689974AB3D948E7B4B17ECA36CEEE89",
+    "guid": "leafletMapVisual_choropleth",
     "visualClassName": "Visual",
-    "version": "1.0.0.0",
-    "description": "Horizon-Map",
+    "version": "1.0.0.1",
+    "description": "PH-Map-Choropleth",
     "supportUrl": "https://app.powerbi.com/",
     "gitHubUrl": ""
   },
