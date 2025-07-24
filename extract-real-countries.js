@@ -47,6 +47,7 @@ const embeddedCountries = geoJsonData.features
         gaul0_name: props.gaul0_name || props.disp_en || 'Unknown',
         continent: props.continent || 'Unknown',
         gaul0_code: props.gaul0_code || Math.floor(Math.random() * 1000),
+        gaul_code: props.gaul_code || props.gaul0_code || Math.floor(Math.random() * 1000),
         disp_en: props.disp_en || props.gaul0_name || 'Unknown'
       },
       geometry: processedGeometry

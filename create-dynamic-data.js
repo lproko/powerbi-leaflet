@@ -19,20 +19,21 @@ const processedCountries = geoJsonData.features.map(feature => {
     coordinates = coordinates[0];
   }
   
-  return {
-    type: "Feature",
-    properties: {
-      iso3_code: props.iso3_code || '',
-      gaul0_name: props.gaul0_name || props.disp_en || 'Unknown',
-      continent: props.continent || 'Unknown',
-      gaul0_code: props.gaul0_code || Math.floor(Math.random() * 1000),
-      disp_en: props.disp_en || props.gaul0_name || 'Unknown'
-    },
-    geometry: {
-      type: "Polygon",
-      coordinates: coordinates
-    }
-  };
+      return {
+      type: "Feature",
+      properties: {
+        iso3_code: props.iso3_code || '',
+        gaul0_name: props.gaul0_name || props.disp_en || 'Unknown',
+        continent: props.continent || 'Unknown',
+        gaul0_code: props.gaul0_code || Math.floor(Math.random() * 1000),
+        gaul_code: props.gaul_code || props.gaul0_code || Math.floor(Math.random() * 1000),
+        disp_en: props.disp_en || props.gaul0_name || 'Unknown'
+      },
+      geometry: {
+        type: "Polygon",
+        coordinates: coordinates
+      }
+    };
 });
 
 // Generate the dynamic data file

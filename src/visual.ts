@@ -10,7 +10,6 @@ import DataView = powerbiVisualsApi.DataView;
 import ISelectionManager = powerbiVisualsApi.extensibility.ISelectionManager;
 import ISelectionId = powerbiVisualsApi.visuals.ISelectionId;
 import markerIcon from "leaflet/dist/images/marker-icon.png";
-import notavailable from "../assets/markers/notavailable.png";
 import { embeddedCountries } from "./embedded-countries";
 
 interface ChoroplethFeature {
@@ -20,6 +19,12 @@ interface ChoroplethFeature {
     admin_level?: number;
     choropleth_value?: number;
     name?: string;
+    gaul_code?: number;
+    gaul0_code?: number;
+    gaul0_name?: string;
+    iso3_code?: string;
+    continent?: string;
+    disp_en?: string;
   };
   geometry: any;
 }
@@ -38,8 +43,8 @@ export class Visual implements IVisual {
     showChoropleth: boolean;
     colorScheme: string;
   };
-  private currentAdminCodes: number[] = [];
-  private naAdminCodes: number[] = [];
+  private currentAdminCodes: (number | string)[] = [];
+  private naAdminCodes: (number | string)[] = [];
   private defaultGeoJsonLoaded: boolean = false;
   private tooltipDiv: HTMLElement;
   private emptyStateDiv: HTMLElement;
@@ -156,6 +161,8 @@ export class Visual implements IVisual {
         display: none !important;
       }
       
+
+      
       .tooltip-row {
         display: flex;
         justify-content: space-between;
@@ -193,8 +200,8 @@ export class Visual implements IVisual {
       
       .leaflet-control-zoom a {
         margin-bottom: 6px !important;
-        background-color: #F7F8F9 !important;
-        border: none !important;
+        background-color: white !important;
+        border: 1px solid #F2F2F2 !important;
         border-radius: 8px !important;
       }
       
@@ -229,6 +236,18 @@ export class Visual implements IVisual {
         name: "GAUL.EFSA",
         features: this.getEmbeddedCountries(),
       };
+
+      // Log available gaul_code values for debugging
+      const availableGaulCodes = embeddedGeoJson.features
+        .map((f) => ({
+          name: f.properties?.gaul0_name,
+          gaul_code: f.properties?.gaul_code,
+        }))
+        .filter((f) => f.gaul_code !== undefined);
+      console.log(
+        "Available gaul_code values in embedded data:",
+        availableGaulCodes.slice(0, 10)
+      ); // Show first 10
 
       // Process the GeoJSON data to add choropleth values
       this.processGeoJsonData(embeddedGeoJson);
@@ -324,10 +343,12 @@ export class Visual implements IVisual {
 
   private getChoroplethStyle(feature: any) {
     // Check if admin code matches any of the current admin codes
-    const featureGaulCode = feature.properties?.gaul0_code;
+    const featureGaulCode = feature.properties?.gaul_code;
     const shouldApplyChoropleth =
       this.currentAdminCodes.length > 0 &&
-      this.currentAdminCodes.includes(featureGaulCode);
+      (this.currentAdminCodes.includes(featureGaulCode) ||
+        this.currentAdminCodes.includes(featureGaulCode?.toString()) ||
+        this.currentAdminCodes.includes(parseFloat(featureGaulCode)));
 
     return {
       fillColor: shouldApplyChoropleth ? "#455E6F" : "transparent",
@@ -351,10 +372,12 @@ export class Visual implements IVisual {
       const continent = feature.properties.continent || "";
 
       // Check if this feature should have choropleth styling
-      const featureGaulCode = feature.properties?.gaul0_code;
+      const featureGaulCode = feature.properties?.gaul_code;
       const shouldApplyChoropleth =
         this.currentAdminCodes.length > 0 &&
-        this.currentAdminCodes.includes(featureGaulCode);
+        (this.currentAdminCodes.includes(featureGaulCode) ||
+          this.currentAdminCodes.includes(featureGaulCode?.toString()) ||
+          this.currentAdminCodes.includes(parseFloat(featureGaulCode)));
 
       // Only add basic hover effects for active choropleth countries
       // Tooltip interactions will be set up later when data is available
@@ -437,7 +460,9 @@ export class Visual implements IVisual {
             this.currentAdminCodes.push(adminCode);
             validAdminCodes++;
           } else {
-            invalidAdminCodes++;
+            // Try as string comparison as well
+            this.currentAdminCodes.push(rowAdminCode.toString());
+            validAdminCodes++;
           }
         } else if (rowAdminCode === "NA") {
           // For NA admin codes, we need to determine which country this represents
@@ -456,7 +481,12 @@ export class Visual implements IVisual {
         }
       }
 
-      // Debug logging removed for cleaner output
+      // Debug logging for admin codes
+      console.log("Power BI Admin Codes:", this.currentAdminCodes);
+      console.log("NA Admin Codes:", this.naAdminCodes);
+      console.log("Valid Admin Codes Count:", validAdminCodes);
+      console.log("NA Admin Codes Count:", naAdminCodes);
+      console.log("Invalid Admin Codes Count:", invalidAdminCodes);
 
       // Process choropleth tooltip data
       this.processChoroplethTooltipData(dataView);
@@ -517,12 +547,19 @@ export class Visual implements IVisual {
           lng >= -180 &&
           lng <= 180
         ) {
-          const icon = L.icon({
-            iconUrl: notavailable,
-            iconSize: [25, 25],
-            iconAnchor: [12, 12],
-            popupAnchor: [0, -12],
-            tooltipAnchor: [0, -12],
+          // Create custom marker with exact color #22294d
+          const customMarkerIcon = L.divIcon({
+            className: "custom-marker",
+            html: `
+              <svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12.5 0C5.596 0 0 5.596 0 12.5c0 9.375 12.5 28.5 12.5 28.5s12.5-19.125 12.5-28.5C25 5.596 19.404 0 12.5 0z" fill="#22294d"/>
+                <circle cx="12.5" cy="12.5" r="6" fill="white"/>
+              </svg>
+            `,
+            iconSize: [25, 41],
+            iconAnchor: [12, 41],
+            popupAnchor: [1, -34],
+            tooltipAnchor: [16, -28],
           });
 
           // Build dynamic tooltip content from tooltip fields
@@ -581,7 +618,7 @@ export class Visual implements IVisual {
           }
 
           const marker = L.marker([lat, lng], {
-            icon: icon,
+            icon: customMarkerIcon,
             adminCode:
               row[2] !== null && row[2] !== undefined && row[2] !== "NA"
                 ? parseFloat(row[2].toString())
@@ -678,10 +715,10 @@ export class Visual implements IVisual {
         // Add choropleth_value based on your data properties
         // You can customize this based on your specific needs
         if (feature.properties) {
-          // Example: use gaul0_code as a basis for choropleth value
-          if (feature.properties.gaul0_code) {
+          // Example: use gaul_code as a basis for choropleth value
+          if (feature.properties.gaul_code) {
             feature.properties.choropleth_value =
-              (feature.properties.gaul0_code % 100) / 100;
+              (feature.properties.gaul_code % 100) / 100;
           } else {
             feature.properties.choropleth_value = Math.random(); // Fallback random value
           }
@@ -721,10 +758,19 @@ export class Visual implements IVisual {
 
   private getDefaultChoroplethStyle(feature: any) {
     // Enhanced styling for the loaded GeoJSON based on Leaflet GeoJSON examples
-    const featureGaulCode = feature.properties?.gaul0_code;
+    const featureGaulCode = feature.properties?.gaul_code;
     const shouldApplyChoropleth =
       this.currentAdminCodes.length > 0 &&
-      this.currentAdminCodes.includes(featureGaulCode);
+      (this.currentAdminCodes.includes(featureGaulCode) ||
+        this.currentAdminCodes.includes(featureGaulCode?.toString()) ||
+        this.currentAdminCodes.includes(parseFloat(featureGaulCode)));
+
+    // Debug logging for first few features
+    if (feature.properties?.gaul0_name && this.currentAdminCodes.length > 0) {
+      console.log(
+        `Feature: ${feature.properties.gaul0_name}, gaul_code: ${featureGaulCode}, shouldApply: ${shouldApplyChoropleth}`
+      );
+    }
 
     // Check if this country has NA admin code in the data
     const hasNAAdminCode = this.hasNAAdminCodeForCountry(featureGaulCode);
@@ -765,7 +811,7 @@ export class Visual implements IVisual {
       if (feature.geometry && feature.geometry.coordinates) {
         // Simple point-in-polygon check
         if (this.isPointInPolygon(lat, lng, feature.geometry)) {
-          return feature.properties?.gaul0_code || null;
+          return feature.properties?.gaul_code || null;
         }
       }
     }
@@ -816,7 +862,10 @@ export class Visual implements IVisual {
 
   // Method to check if a country has NA admin code in the data
   private hasNAAdminCodeForCountry(gaulCode: number): boolean {
-    return this.naAdminCodes.includes(gaulCode);
+    return (
+      this.naAdminCodes.includes(gaulCode) ||
+      this.naAdminCodes.includes(gaulCode.toString())
+    );
   }
 
   // Method to show custom tooltip
@@ -841,12 +890,14 @@ export class Visual implements IVisual {
 
   // Method to update tooltip interactions for a choropleth feature
   private updateChoroplethTooltipInteraction(feature: any, layer: L.Layer) {
-    const featureGaulCode = feature.properties?.gaul0_code;
+    const featureGaulCode = feature.properties?.gaul_code;
 
     // Check if this feature should have choropleth styling (active region)
     const shouldApplyChoropleth =
       this.currentAdminCodes.length > 0 &&
-      this.currentAdminCodes.includes(featureGaulCode);
+      (this.currentAdminCodes.includes(featureGaulCode) ||
+        this.currentAdminCodes.includes(featureGaulCode?.toString()) ||
+        this.currentAdminCodes.includes(parseFloat(featureGaulCode)));
 
     // Check if this feature has tooltip data
     const hasTooltipData =
@@ -954,7 +1005,7 @@ export class Visual implements IVisual {
     const tooltipParts = [];
 
     // Check if we have custom choropleth tooltip data for this feature
-    const featureGaulCode = feature.properties?.gaul0_code;
+    const featureGaulCode = feature.properties?.gaul_code;
     const hasCustomTooltipData =
       featureGaulCode && this.choroplethTooltipData.has(featureGaulCode);
 
@@ -998,24 +1049,32 @@ export class Visual implements IVisual {
   // Method to check if there are any active choropleth regions
   private hasActiveChoroplethData(): boolean {
     // Get all available choropleth admin codes from the map
-    const availableChoroplethCodes = new Set<number>();
+    const availableChoroplethCodes = new Set<number | string>();
 
     if (this.choroplethLayer) {
       this.choroplethLayer.eachLayer((layer: any) => {
-        if (layer.feature && layer.feature.properties?.gaul0_code) {
-          availableChoroplethCodes.add(layer.feature.properties.gaul0_code);
+        if (layer.feature && layer.feature.properties?.gaul_code) {
+          availableChoroplethCodes.add(layer.feature.properties.gaul_code);
         }
       });
     }
 
     // Check if any of our data admin codes match available choropleth codes
-    const matchingAdminCodes = this.currentAdminCodes.filter((code) =>
-      availableChoroplethCodes.has(code)
+    const matchingAdminCodes = this.currentAdminCodes.filter(
+      (code) =>
+        availableChoroplethCodes.has(code) ||
+        availableChoroplethCodes.has(
+          typeof code === "number" ? code.toString() : parseFloat(code)
+        )
     );
 
     // Check if any of our NA admin codes match available choropleth codes
-    const matchingNAAdminCodes = this.naAdminCodes.filter((code) =>
-      availableChoroplethCodes.has(code)
+    const matchingNAAdminCodes = this.naAdminCodes.filter(
+      (code) =>
+        availableChoroplethCodes.has(code) ||
+        availableChoroplethCodes.has(
+          typeof code === "number" ? code.toString() : parseFloat(code)
+        )
     );
 
     // Check if there's any tooltip data for matching countries
@@ -1064,7 +1123,7 @@ export class Visual implements IVisual {
   }
 
   // Method to update admin codes and refresh choropleth
-  public updateAdminCodes(adminCodes: number[]) {
+  public updateAdminCodes(adminCodes: (number | string)[]) {
     this.currentAdminCodes = adminCodes;
 
     // Refresh the choropleth layer if it exists
