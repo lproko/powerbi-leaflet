@@ -11,6 +11,7 @@ import ISelectionManager = powerbiVisualsApi.extensibility.ISelectionManager;
 import ISelectionId = powerbiVisualsApi.visuals.ISelectionId;
 import markerIcon from "leaflet/dist/images/marker-icon.png";
 import { embeddedCountries } from "./embedded-countries";
+import { disputedBorders } from "./disputed-borders";
 
 interface ChoroplethFeature {
   type: string;
@@ -38,6 +39,7 @@ export class Visual implements IVisual {
   private markers: L.Marker[] = [];
   private selectionIds: ISelectionId[] = [];
   private choroplethLayer: L.GeoJSON;
+  private disputedBordersLayer: L.GeoJSON;
   private colorScale: (value: number) => string;
   private choroplethSettings: {
     showChoropleth: boolean;
@@ -169,6 +171,13 @@ export class Visual implements IVisual {
         this.onEachChoroplethFeature(feature, layer),
     });
 
+    // Initialize disputed borders layer
+    this.disputedBordersLayer = L.geoJSON(null, {
+      style: (feature) => this.getDisputedBorderStyle(feature),
+      onEachFeature: (feature, layer) =>
+        this.onEachDisputedBorderFeature(feature, layer),
+    });
+
     // Draw control removed - no polygon drawing or delete functionality
 
     // Hide Leaflet attribution and any flags
@@ -243,6 +252,9 @@ export class Visual implements IVisual {
 
     // Load default GeoJSON file
     this.loadDefaultGeoJson();
+
+    // Load disputed borders
+    this.loadDisputedBorders();
   }
 
   private async loadDefaultGeoJson() {
@@ -1541,5 +1553,50 @@ export class Visual implements IVisual {
         this.showEmptyState();
       }
     }, 500); // Longer delay for packaged version
+  }
+
+  // Method to get disputed border styling
+  private getDisputedBorderStyle(feature: any) {
+    const lineStyle = feature.properties?.line_style || "dashed";
+
+    return {
+      color: "#CBCBCB", // Light gray color for disputed borders
+      weight: 3,
+      opacity: 1,
+      fillOpacity: 0,
+      dashArray: lineStyle === "dotted" ? "1, 3" : "10, 5", // Dotted vs Dashed
+      lineCap: "round",
+      lineJoin: "round",
+    };
+  }
+
+  // Method to handle disputed border interactions
+  private onEachDisputedBorderFeature(feature: any, layer: L.Layer) {
+    // No click events for disputed borders - they are visual indicators only
+  }
+
+  // Method to load disputed borders
+  private loadDisputedBorders() {
+    try {
+      // Load the disputed borders GeoJSON
+      const bordersData = disputedBorders;
+
+      // Clear existing borders
+      if (this.disputedBordersLayer) {
+        this.disputedBordersLayer.clearLayers();
+      }
+
+      // Add new borders
+      this.disputedBordersLayer.addData(bordersData);
+
+      // Add to map if not already added
+      if (!this.map.hasLayer(this.disputedBordersLayer)) {
+        this.disputedBordersLayer.addTo(this.map);
+      }
+
+      console.log("Disputed borders loaded successfully");
+    } catch (error) {
+      console.error("Error loading disputed borders:", error);
+    }
   }
 }

@@ -4,7 +4,7 @@
     "displayName": "LeafletMapVisual",
     "guid": "leafletMapVisual_choropleth",
     "visualClassName": "Visual",
-    "version": "1.0.0.2",
+    "version": "1.0.0.3",
     "description": "PHL-Map-Choropleth",
     "supportUrl": "https://app.powerbi.com/",
     "gitHubUrl": ""
