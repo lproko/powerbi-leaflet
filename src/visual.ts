@@ -10,7 +10,6 @@ import DataView = powerbiVisualsApi.DataView;
 import ISelectionManager = powerbiVisualsApi.extensibility.ISelectionManager;
 import ISelectionId = powerbiVisualsApi.visuals.ISelectionId;
 import markerIcon from "leaflet/dist/images/marker-icon.png";
-import { embeddedCountries } from "./embedded-countries";
 import { disputedBorders } from "./disputed-borders";
 
 interface ChoroplethFeature {
@@ -26,14 +25,26 @@ interface ChoroplethFeature {
     iso3_code?: string;
     continent?: string;
     disp_en?: string;
+    adminCode?: number | string;
+    countryName?: string;
+    isoCode?: string;
   };
   geometry: any;
+}
+
+interface PowerBIChoroplethData {
+  adminCode: number | string;
+  geometry: any;
+  choroplethValue: number;
+  countryName: string;
+  isoCode: string;
+  continent: string;
+  tooltipData: Map<string, any>;
 }
 
 export class Visual implements IVisual {
   private target: HTMLElement;
   private map: L.Map;
-  private drawControl: L.Control.Draw;
   private selectionManager: ISelectionManager;
   private host: powerbiVisualsApi.extensibility.visual.IVisualHost;
   private markers: L.Marker[] = [];
@@ -45,14 +56,11 @@ export class Visual implements IVisual {
     showChoropleth: boolean;
     colorScheme: string;
   };
-  private currentAdminCodes: (number | string)[] = [];
-  private naAdminCodes: (number | string)[] = [];
-  private defaultGeoJsonLoaded: boolean = false;
   private tooltipDiv: HTMLElement;
   private emptyStateDiv: HTMLElement;
-  private choroplethTooltipData: Map<number, any[]> = new Map(); // Map admin code to tooltip data
-  private currentSelection: ISelectionId[] = []; // Track current selection state
-  private persistentSelection: ISelectionId[] = []; // Track selection state across updates
+  private currentSelection: ISelectionId[] = [];
+  private persistentSelection: ISelectionId[] = [];
+  private powerBIChoroplethData: PowerBIChoroplethData[] = [];
 
   constructor(options: VisualConstructorOptions) {
     this.target = options.element;
@@ -129,8 +137,10 @@ export class Visual implements IVisual {
     this.target.appendChild(this.emptyStateDiv);
 
     this.map = L.map(mapElement, {
-      zoomControl: false, // Disable default zoom control
-    }).setView([51.505, -0.09], 2);
+      zoomControl: false,
+      attributionControl: false,
+      worldCopyJump: true,
+    }).setView([20, 0], 10);
 
     // Add zoom control to top right
     L.control
@@ -141,28 +151,16 @@ export class Visual implements IVisual {
 
     // Add map click handler to clear selections when clicking on empty areas
     this.map.on("click", (event) => {
-      // Only clear if clicking on the map itself, not on markers
       if (
         event.originalEvent &&
         event.originalEvent.target === this.map.getContainer()
       ) {
         console.log("Map clicked - clearing selections");
-        // Show only markers in current filtered context instead of all markers
         this.showOnlyCurrentContextMarkers();
       }
     });
 
-    L.tileLayer(
-      "https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png",
-      {
-        attribution:
-          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-        subdomains: "abcd",
-        maxZoom: 20,
-      }
-    ).addTo(this.map);
-
-    // Drawn items feature group removed
+    // Basemap removed - using only GeoJSON data as background
 
     // Initialize choropleth layer
     this.choroplethLayer = L.geoJSON(null, {
@@ -178,16 +176,12 @@ export class Visual implements IVisual {
         this.onEachDisputedBorderFeature(feature, layer),
     });
 
-    // Draw control removed - no polygon drawing or delete functionality
-
     // Hide Leaflet attribution and any flags
     const style = document.createElement("style");
     style.textContent = `
       .leaflet-attribution-flag {
         display: none !important;
       }
-      
-
       
       .tooltip-row {
         display: flex;
@@ -238,66 +232,20 @@ export class Visual implements IVisual {
       .leaflet-control-zoom a:hover {
         background-color: #E8E9EA !important;
       }
+      
+      /* Clean map background styling */
+      .leaflet-container {
+        background: white !important;
+      }
+      
+      .leaflet-pane {
+        background: transparent !important;
+      }
     `;
-
-    // .leaflet-control-attribution a {
-    //   display: none !important;
-    // }
-    // .leaflet-control-attribution img {
-    //   display: none !important;
-    // }
     document.head.appendChild(style);
-
-    // Draw control event handlers removed
-
-    // Load default GeoJSON file
-    this.loadDefaultGeoJson();
 
     // Load disputed borders
     this.loadDisputedBorders();
-  }
-
-  private async loadDefaultGeoJson() {
-    try {
-      // Use a simpler, more reliable approach for PowerBI Desktop
-      const embeddedGeoJson = {
-        type: "FeatureCollection",
-        name: "GAUL.EFSA",
-        features: this.getEmbeddedCountries(),
-      };
-
-      // Log available gaul_code values for debugging
-      const availableGaulCodes = embeddedGeoJson.features
-        .map((f) => ({
-          name: f.properties?.gaul0_name,
-          gaul_code: f.properties?.gaul_code,
-        }))
-        .filter((f) => f.gaul_code !== undefined);
-      console.log(
-        "Available gaul_code values in embedded data:",
-        availableGaulCodes.slice(0, 10)
-      ); // Show first 10
-
-      // Process the GeoJSON data to add choropleth values
-      this.processGeoJsonData(embeddedGeoJson);
-
-      this.addDefaultChoroplethLayer(embeddedGeoJson);
-      this.defaultGeoJsonLoaded = true;
-
-      // Trigger empty state check after GeoJSON is loaded
-      this.performEmptyStateCheck();
-    } catch (error) {
-      console.error("Error loading embedded GeoJSON:", error);
-      this.defaultGeoJsonLoaded = true;
-
-      // Trigger empty state check even if GeoJSON loading fails
-      this.performEmptyStateCheck();
-    }
-  }
-
-  private getEmbeddedCountries() {
-    // Return the real country geometries extracted from the original GeoJSON file
-    return embeddedCountries;
   }
 
   private createColorScale(): (value: number) => string {
@@ -338,7 +286,6 @@ export class Visual implements IVisual {
         "#ef3b2c",
         "#cb181d",
       ],
-      // Add a new scheme that works well with country data
       Viridis: [
         "#440154",
         "#482878",
@@ -356,17 +303,14 @@ export class Visual implements IVisual {
     const colors =
       colorSchemes[
         this.choroplethSettings.colorScheme as keyof typeof colorSchemes
-      ] || colorSchemes.Viridis; // Use Viridis as default for better visualization
+      ] || colorSchemes.Viridis;
 
     return (value: number): string => {
       if (value === null || value === undefined || isNaN(value)) {
-        return colors[0]; // Return first color for null/undefined values
+        return colors[0];
       }
 
-      // Clamp value between 0 and 1
       const clampedValue = Math.max(0, Math.min(1, value));
-
-      // Map to color index
       const index = Math.min(
         Math.floor(clampedValue * (colors.length - 1)),
         colors.length - 1
@@ -377,63 +321,50 @@ export class Visual implements IVisual {
   }
 
   private getChoroplethStyle(feature: any) {
-    // Check if admin code matches any of the current admin codes
-    const featureGaulCode = feature.properties?.gaul_code;
-    const shouldApplyChoropleth =
-      this.currentAdminCodes.length > 0 &&
-      (this.currentAdminCodes.includes(featureGaulCode) ||
-        this.currentAdminCodes.includes(featureGaulCode?.toString()) ||
-        this.currentAdminCodes.includes(parseFloat(featureGaulCode)));
+    const choroplethValue = feature.properties?.choropleth_value;
 
+    // Use #F2F2F2 for all choropleth features regardless of value
     return {
-      fillColor: shouldApplyChoropleth ? "#455E6F" : "transparent",
-      weight: 2,
+      fillColor: "#F2F2F2",
+      weight: 0.2,
       opacity: 1,
-      color: shouldApplyChoropleth ? "black" : "#ccc",
-      fillOpacity: shouldApplyChoropleth ? 0.7 : 0,
+      color: "black",
+      fillOpacity: 0.8,
     };
   }
 
   private onEachChoroplethFeature(feature: any, layer: L.Layer) {
-    // Enhanced interaction based on Leaflet GeoJSON examples
     if (feature.properties) {
       const name =
         feature.properties.name ||
-        feature.properties.gaul0_name ||
-        feature.properties.disp_en ||
+        feature.properties.countryName ||
         "Unknown Region";
       const value = feature.properties.choropleth_value || "N/A";
-      const countryCode = feature.properties.iso3_code || "";
+      const countryCode =
+        feature.properties.isoCode || feature.properties.iso3_code || "";
       const continent = feature.properties.continent || "";
 
-      // Check if this feature should have choropleth styling
-      const featureGaulCode = feature.properties?.gaul_code;
-      const shouldApplyChoropleth =
-        this.currentAdminCodes.length > 0 &&
-        (this.currentAdminCodes.includes(featureGaulCode) ||
-          this.currentAdminCodes.includes(featureGaulCode?.toString()) ||
-          this.currentAdminCodes.includes(parseFloat(featureGaulCode)));
+      // Add click effects for choropleth features
+      layer.on({
+        click: (e) => {
+          const layer = e.target;
+          layer.setStyle({
+            weight: 3,
+            color: "#666",
+            fillOpacity: 0.9,
+          });
+          layer.bringToFront();
 
-      // Only add basic click effects for active choropleth countries
-      // Tooltip interactions will be set up later when data is available
-      if (shouldApplyChoropleth) {
-        layer.on({
-          click: (e) => {
-            const layer = e.target;
-            layer.setStyle({
-              weight: 3,
-              color: "#666",
-              fillOpacity: 0.9,
-            });
-            layer.bringToFront();
+          // Show tooltip on click
+          const tooltipContent = this.buildChoroplethTooltipContent(feature);
+          this.showTooltip(tooltipContent, e.latlng);
 
-            // Reset style after 2 seconds
-            setTimeout(() => {
-              this.choroplethLayer.resetStyle(e.target);
-            }, 2000);
-          },
-        });
-      }
+          // Reset style after 2 seconds
+          setTimeout(() => {
+            this.choroplethLayer.resetStyle(e.target);
+          }, 2000);
+        },
+      });
     }
   }
 
@@ -441,115 +372,119 @@ export class Visual implements IVisual {
     try {
       const dataView: DataView = options.dataViews[0];
 
-      // Reset admin codes when no data
+      // Reset data when no data
       if (
         !dataView ||
         !dataView.table ||
         !dataView.table.columns ||
         !dataView.table.rows
       ) {
-        this.currentAdminCodes = [];
-        this.naAdminCodes = [];
-        // If no data, just ensure default GeoJSON is loaded
-        if (!this.defaultGeoJsonLoaded) {
-          this.loadDefaultGeoJson();
-        }
-        // Refresh choropleth to show no highlighting
-        if (this.choroplethLayer) {
-          this.choroplethLayer.setStyle((feature) =>
-            this.getDefaultChoroplethStyle(feature)
-          );
-        }
-        // Clear markers and show empty state when no data
-        this.markers.forEach((marker) => {
-          this.map.removeLayer(marker);
-        });
-        this.markers = [];
-        // Clear selection state when no data
-        this.currentSelection = [];
-        this.persistentSelection = [];
+        this.clearAllData();
         this.showEmptyState();
         return;
       }
 
+      // Log helpful information about data import
+      console.log("🌍 Power BI Leaflet Visual - Data Import Guide:");
+      console.log(
+        "   • For best results with complex geometries, use JSON import instead of CSV/Excel"
+      );
+      console.log("   • Power BI has a 32,766 character limit for text fields");
+      console.log(
+        "   • If you see truncation errors, consider using the choropleth-data.json file"
+      );
+
+      // Add comprehensive debugging for the update method
+      console.log("🔍 UPDATE METHOD - Data structure received:", {
+        hasDataView: !!dataView,
+        hasTable: !!dataView.table,
+        hasColumns: !!dataView.table.columns,
+        hasRows: !!dataView.table.rows,
+        totalRows: dataView.table.rows?.length || 0,
+        totalColumns: dataView.table.columns?.length || 0,
+        columnNames:
+          dataView.table.columns?.map((col) => col.displayName) || [],
+        columnRoles:
+          dataView.table.columns?.map((col) => ({
+            name: col.displayName,
+            roles: col.roles,
+          })) || [],
+      });
+
+      // Check if Power BI is filtering the data
+      if (dataView.table.rows && dataView.table.rows.length > 0) {
+        console.log("🔍 Data sample check - First row:", {
+          rowIndex: 0,
+          rowData: dataView.table.rows[0],
+          rowKeys: Object.keys(dataView.table.rows[0] || {}),
+          rowValues: Object.values(dataView.table.rows[0] || {}),
+          rowLength: Object.keys(dataView.table.rows[0] || {}).length,
+        });
+
+        // Check if we have multiple rows with different data
+        if (dataView.table.rows.length > 1) {
+          console.log("🔍 Data sample check - Second row:", {
+            rowIndex: 1,
+            rowData: dataView.table.rows[1],
+            rowKeys: Object.keys(dataView.table.rows[1] || {}),
+            rowValues: Object.values(dataView.table.rows[1] || {}),
+            rowLength: Object.keys(dataView.table.rows[1] || {}).length,
+          });
+        }
+
+        // Check for any Power BI data transformations
+        console.log("🔍 Power BI data transformation check:", {
+          hasCategorical: !!dataView.categorical,
+          hasSingle: !!dataView.single,
+          hasTable: !!dataView.table,
+          tableRowCount: dataView.table?.rows?.length || 0,
+          tableColumnCount: dataView.table?.columns?.length || 0,
+        });
+      }
+
       // Update choropleth settings if available
       this.choroplethSettings.showChoropleth = true;
-      this.choroplethSettings.colorScheme = "Viridis"; // Use Viridis for better visualization
+      this.choroplethSettings.colorScheme = "Viridis";
       this.colorScale = this.createColorScale();
 
       const values = dataView.table.rows;
+      const columns = dataView.table.columns;
 
-      // Read all admin codes from Power BI data (from the 3rd column - index 2)
-      if (values.length > 0 && values[0].length >= 3) {
-        // Collect all valid admin codes and NA admin codes from the dataset
-        this.currentAdminCodes = [];
-        this.naAdminCodes = [];
+      // Debug: Log the initial data state
+      console.log("🔍 Initial data state:", {
+        valuesLength: values.length,
+        columnsLength: columns.length,
+        firstRowKeys: values.length > 0 ? Object.keys(values[0] || {}) : [],
+        firstRowValues: values.length > 0 ? Object.values(values[0] || {}) : [],
+      });
 
-        let validAdminCodes = 0;
-        let naAdminCodes = 0;
-        let invalidAdminCodes = 0;
+      // Clear existing data
+      this.clearAllData();
 
-        for (let i = 0; i < values.length; i++) {
-          const rowAdminCode = values[i][2];
-          if (
-            rowAdminCode !== null &&
-            rowAdminCode !== undefined &&
-            rowAdminCode !== "NA"
-          ) {
-            const adminCode = parseFloat(rowAdminCode.toString());
-            if (!isNaN(adminCode)) {
-              this.currentAdminCodes.push(adminCode);
-              validAdminCodes++;
-            } else {
-              // Try as string comparison as well
-              this.currentAdminCodes.push(rowAdminCode.toString());
-              validAdminCodes++;
-            }
-          } else if (rowAdminCode === "NA") {
-            // For NA admin codes, we need to determine which country this represents
-            // Since we don't have country mapping in the data, we'll need to use
-            // the latitude/longitude to find the corresponding country
-            const lat = parseFloat(values[i][0].toString());
-            const lng = parseFloat(values[i][1].toString());
-            if (!isNaN(lat) && !isNaN(lng)) {
-              // Find the country that contains this point
-              const countryCode = this.findCountryByCoordinates(lat, lng);
-              if (countryCode !== null) {
-                this.naAdminCodes.push(countryCode);
-                naAdminCodes++;
-              }
-            }
-          }
-        }
+      // Process choropleth data from Power BI table
+      console.log("🔄 Step 1: Processing choropleth data...");
+      this.processChoroplethDataFromPowerBI(dataView);
 
-        // Debug logging for admin codes
-        console.log("Power BI Admin Codes:", this.currentAdminCodes);
-        console.log("NA Admin Codes:", this.naAdminCodes);
-        console.log("Valid Admin Codes Count:", validAdminCodes);
-        console.log("NA Admin Codes Count:", naAdminCodes);
-        console.log("Invalid Admin Codes Count:", invalidAdminCodes);
+      // Process marker data
+      console.log("🔄 Step 2: Processing marker data...");
+      this.processMarkerData(dataView);
 
-        // Process choropleth tooltip data
-        this.processChoroplethTooltipData(dataView);
+      // Validate that markers were created correctly
+      console.log("🔍 Marker validation after processing:", {
+        markersCreated: this.markers.length,
+        expectedMarkers: values.length,
+        markerPositions: this.markers.slice(0, 5).map((marker, idx) => {
+          const latlng = marker.getLatLng();
+          return {
+            index: idx,
+            position: [latlng.lat, latlng.lng],
+            hasSelectionId: !!(marker as any).options.selectionId,
+          };
+        }),
+      });
 
-        // Force the analysis to run
-        this.hasActiveChoroplethData();
-
-        // Refresh choropleth with all admin codes and update tooltip interactions
-        if (this.choroplethLayer) {
-          this.choroplethLayer.setStyle((feature) =>
-            this.getDefaultChoroplethStyle(feature)
-          );
-
-          // Update tooltip interactions for all features
-          this.choroplethLayer.eachLayer((layer: any) => {
-            if (layer.feature) {
-              this.updateChoroplethTooltipInteraction(layer.feature, layer);
-            }
-          });
-        }
-      } else {
-      }
+      // Create selection IDs
+      console.log("🔄 Step 3: Creating selection IDs...");
       this.selectionIds = values.map((row, index) => {
         return this.host
           .createSelectionIdBuilder()
@@ -557,230 +492,1086 @@ export class Visual implements IVisual {
           .createSelectionId();
       });
 
-      // Clear existing markers
-      this.markers.forEach((marker) => {
-        this.map.removeLayer(marker);
+      // Debug: Log selection IDs creation
+      console.log("🔍 Selection IDs created:", {
+        totalRows: values.length,
+        selectionIdsCreated: this.selectionIds.length,
+        firstFewSelectionIds: this.selectionIds.slice(0, 3).map((id, idx) => ({
+          rowIndex: idx,
+          selectionId: id.toString ? id.toString() : String(id),
+          hasGetKey: !!id.getKey,
+          hasToString: !!id.toString,
+        })),
       });
-      this.markers = [];
 
-      // DO NOT process or display any choropleth boundaries from Power BI data
-      // Only show the imported file as boundaries
+      // Update choropleth layer
+      console.log("🔄 Step 4: Updating choropleth layer...");
+      this.updateChoroplethLayer();
 
-      // Add markers (existing functionality)
+      // Perform empty state check
+      console.log("🔄 Step 5: Performing empty state check...");
+      this.performEmptyStateCheck();
+
+      // Restore previous selection state if needed
+      console.log("🔄 Step 6: Restoring selection state...");
+      this.restoreSelectionState();
+
+      // Final validation check
+      console.log("🔍 Final validation check:", {
+        totalRowsReceived: values.length,
+        markersCreated: this.markers.length,
+        selectionIdsCreated: this.selectionIds.length,
+        choroplethFeaturesCreated: this.powerBIChoroplethData.length,
+        mapHasMarkers: this.map.hasLayer
+          ? this.markers.filter((marker) => this.map.hasLayer(marker)).length
+          : "N/A",
+      });
+
+      console.log("✅ Update method completed successfully");
+    } catch (error) {
+      console.error("Error in visual update:", error);
+      this.showEmptyState();
+    }
+  }
+
+  private processChoroplethDataFromPowerBI(dataView: DataView) {
+    this.powerBIChoroplethData = [];
+
+    if (!dataView.table || !dataView.table.columns || !dataView.table.rows) {
+      return;
+    }
+
+    const columns = dataView.table.columns;
+    const values = dataView.table.rows;
+
+    // Find column indices for choropleth data
+    const geometryColIndex = columns.findIndex(
+      (col) =>
+        col.roles?.choroplethGeometry ||
+        col.displayName === "geometryString" ||
+        col.displayName === "data.geometryString"
+    );
+    const valueColIndex = columns.findIndex(
+      (col) => col.roles?.choroplethValue
+    );
+    const adminCodeColIndex = columns.findIndex(
+      (col) =>
+        col.roles?.adminCode ||
+        col.displayName === "adminCode" ||
+        col.displayName === "data.adminCode"
+    );
+    const countryNameColIndex = columns.findIndex(
+      (col) =>
+        col.roles?.countryName ||
+        col.displayName === "countryName" ||
+        col.displayName === "data.countryName"
+    );
+    const isoCodeColIndex = columns.findIndex(
+      (col) =>
+        col.roles?.isoCode ||
+        col.displayName === "isoCode" ||
+        col.displayName === "data.isoCode"
+    );
+    const continentColIndex = columns.findIndex(
+      (col) =>
+        col.roles?.continent ||
+        col.displayName === "continent" ||
+        col.displayName === "data.continent"
+    );
+    const tooltipColIndices = columns
+      .map((col, index) => (col.roles?.tooltip ? index : -1))
+      .filter((index) => index !== -1);
+
+    // Check if we have the split-rows structure
+    const featureIndexColIndex = columns.findIndex(
+      (col) =>
+        col.displayName === "featureIndex" ||
+        col.displayName === "featureindex" ||
+        col.displayName === "FeatureIndex" ||
+        col.displayName === "data.featureIndex" ||
+        col.displayName === "data.FeatureIndex"
+    );
+    const geometryPartColIndex = columns.findIndex(
+      (col) =>
+        col.displayName === "geometryPart" ||
+        col.displayName === "geometrypart" ||
+        col.displayName === "GeometryPart" ||
+        col.displayName === "data.geometryPart" ||
+        col.displayName === "data.GeometryPart"
+    );
+    const totalPartsColIndex = columns.findIndex(
+      (col) =>
+        col.displayName === "totalParts" ||
+        col.displayName === "totalparts" ||
+        col.displayName === "TotalParts" ||
+        col.displayName === "data.totalParts" ||
+        col.displayName === "data.TotalParts"
+    );
+
+    // Check for actual split-rows structure (not just truncated data)
+    let hasSplitRowsPattern = false;
+    if (values.length > 0) {
+      // Only consider it split-rows if we have explicit split-rows columns
+      hasSplitRowsPattern =
+        featureIndexColIndex >= 0 &&
+        geometryPartColIndex >= 0 &&
+        totalPartsColIndex >= 0;
+
+      // Additional check: verify the data actually has multiple parts per feature
+      if (hasSplitRowsPattern) {
+        const featureGroups = new Map();
+        values.forEach((row) => {
+          const featureIndex = row[featureIndexColIndex];
+          if (featureIndex !== null && featureIndex !== undefined) {
+            if (!featureGroups.has(featureIndex)) {
+              featureGroups.set(featureIndex, []);
+            }
+            featureGroups.get(featureIndex).push(row);
+          }
+        });
+
+        // Check if any feature actually has multiple parts
+        const hasMultipleParts = Array.from(featureGroups.values()).some(
+          (rows) => rows.length > 1
+        );
+        hasSplitRowsPattern = hasMultipleParts;
+      }
+
+      // Alternative detection: look for Power BI flattened JSON structure
+      if (!hasSplitRowsPattern) {
+        // Check if we have Power BI flattened JSON columns
+        const hasFlattenedStructure = columns.some(
+          (col) =>
+            col.displayName.startsWith("data.") &&
+            (col.displayName.includes("featureIndex") ||
+              col.displayName.includes("geometryPart") ||
+              col.displayName.includes("totalParts"))
+        );
+
+        if (hasFlattenedStructure) {
+          // This looks like a split-rows structure that Power BI has flattened
+          hasSplitRowsPattern = true;
+          console.log(
+            "🔍 Detected Power BI flattened JSON structure - treating as split-rows"
+          );
+        }
+
+        // Additional check: look for any columns that suggest split-rows structure
+        const hasSplitRowsColumns = columns.some(
+          (col) =>
+            col.displayName.toLowerCase().includes("featureindex") ||
+            col.displayName.toLowerCase().includes("geometrypart") ||
+            col.displayName.toLowerCase().includes("totalparts") ||
+            col.displayName.toLowerCase().includes("rowid")
+        );
+
+        if (hasSplitRowsColumns) {
+          hasSplitRowsPattern = true;
+          console.log("🔍 Detected split-rows columns by pattern matching");
+        }
+
+        // Check if we have many rows but few unique countries (pattern-based detection)
+        if (values.length > 100) {
+          const countryNames = values
+            .map((row) => row[countryNameColIndex])
+            .filter((name) => name);
+          const uniqueCountries = new Set(countryNames);
+          const hasManyRowsFewCountries =
+            values.length > uniqueCountries.size * 2;
+
+          if (hasManyRowsFewCountries) {
+            hasSplitRowsPattern = true;
+            console.log(
+              "🔍 Detected split-rows by data pattern: many rows, few unique countries"
+            );
+          }
+        }
+      }
+    }
+
+    let isSplitRowsStructure = hasSplitRowsPattern;
+
+    // Final fallback: if we have many rows and this looks like it should be split-rows
+    if (!isSplitRowsStructure && values.length > 100) {
+      // Check if this looks like split-rows data by examining the actual data
+      const sampleRows = values.slice(0, 10);
+      const hasRepeatedCountries = sampleRows.some((row, index) => {
+        if (index === 0) return false;
+        return (
+          row[countryNameColIndex] ===
+          sampleRows[index - 1][countryNameColIndex]
+        );
+      });
+
+      if (hasRepeatedCountries) {
+        console.log(
+          "🔍 Fallback detection: Data pattern suggests split-rows structure"
+        );
+        console.log(
+          "💡 Power BI may not be showing all columns - treating as split-rows anyway"
+        );
+        isSplitRowsStructure = true;
+      }
+    }
+
+    console.log("Choropleth column indices:", {
+      geometry: geometryColIndex,
+      value: valueColIndex,
+      adminCode: adminCodeColIndex,
+      countryName: countryNameColIndex,
+      isoCode: isoCodeColIndex,
+      continent: continentColIndex,
+      tooltip: tooltipColIndices,
+      featureIndex: featureIndexColIndex,
+      geometryPart: geometryPartColIndex,
+      totalParts: totalPartsColIndex,
+      isSplitRowsStructure: isSplitRowsStructure,
+    });
+
+    // Debug: Show all available column names and what we're looking for
+    console.log(
+      "🔍 All available columns:",
+      columns.map((col) => ({
+        displayName: col.displayName,
+        name: col.displayName,
+        roles: col.roles,
+        isGeometry:
+          col.displayName === "geometryString" ||
+          col.displayName === "data.geometryString",
+        isFeatureIndex:
+          col.displayName === "featureIndex" ||
+          col.displayName === "data.featureIndex",
+        isGeometryPart:
+          col.displayName === "geometryPart" ||
+          col.displayName === "data.geometryPart",
+        isTotalParts:
+          col.displayName === "totalParts" ||
+          col.displayName === "data.totalParts",
+      }))
+    );
+
+    // Additional debugging: Show the actual data structure
+    if (values.length > 0) {
+      console.log("🔍 First row data structure:", {
+        row0: values[0],
+        row0Keys: Object.keys(values[0] || {}),
+        row0Values: Object.values(values[0] || {}),
+        totalRows: values.length,
+      });
+
+      // Check if we're missing expected split-rows columns
+      const expectedColumns = [
+        "featureIndex",
+        "geometryPart",
+        "totalParts",
+        "rowId",
+      ];
+      const missingColumns = expectedColumns.filter(
+        (col) =>
+          !columns.some((c) =>
+            c.displayName.toLowerCase().includes(col.toLowerCase())
+          )
+      );
+
+      if (missingColumns.length > 0) {
+        console.log("⚠️  Missing expected split-rows columns:", missingColumns);
+        console.log(
+          "💡 This suggests Power BI may not be importing all columns from your JSON file"
+        );
+        console.log(
+          "💡 Try refreshing the data source or check Power BI's JSON import settings"
+        );
+      }
+    }
+
+    if (isSplitRowsStructure) {
+      // Handle actual split-rows structure
+      this.processSplitRowsData(values, columns, {
+        geometryColIndex,
+        valueColIndex,
+        adminCodeColIndex,
+        countryNameColIndex,
+        isoCodeColIndex,
+        continentColIndex,
+        tooltipColIndices,
+        featureIndexColIndex,
+        geometryPartColIndex,
+        totalPartsColIndex,
+      });
+    } else {
+      // Handle traditional single-row structure (including truncated JSON)
+      this.processTraditionalData(values, columns, {
+        geometryColIndex,
+        valueColIndex,
+        adminCodeColIndex,
+        countryNameColIndex,
+        isoCodeColIndex,
+        continentColIndex,
+        tooltipColIndices,
+      });
+    }
+
+    console.log(
+      `Processed ${this.powerBIChoroplethData.length} choropleth features from Power BI data`
+    );
+  }
+
+  private processSplitRowsData(values: any[], columns: any[], indices: any) {
+    // Group rows by featureIndex or country name if featureIndex not available
+    const featureGroups = new Map();
+
+    values.forEach((row, rowIndex) => {
+      let groupKey;
+
+      if (indices.featureIndexColIndex >= 0) {
+        // Use featureIndex if available
+        groupKey = row[indices.featureIndexColIndex];
+      } else {
+        // Fallback: use country name as grouping key
+        groupKey = row[indices.countryNameColIndex] || `row_${rowIndex}`;
+      }
+
+      if (groupKey === null || groupKey === undefined) return;
+
+      if (!featureGroups.has(groupKey)) {
+        featureGroups.set(groupKey, []);
+      }
+      featureGroups.get(groupKey).push(row);
+    });
+
+    console.log(
+      `🔍 Grouped ${values.length} rows into ${featureGroups.size} feature groups`
+    );
+
+    // Check if this is actually a flattened structure (1 row per feature)
+    const isFlattenedStructure = featureGroups.size === values.length;
+    if (isFlattenedStructure) {
+      console.log(
+        "🔍 Detected flattened structure: 1 row per feature, no concatenation needed"
+      );
+
+      // Process each row as a complete feature (no concatenation)
+      values.forEach((row, rowIndex) => {
+        try {
+          const geometryString = String(row[indices.geometryColIndex]);
+
+          // Debug: Show the actual geometry string content
+          if (rowIndex < 5) {
+            // Only show first 5 rows to avoid console spam
+            console.log(`🔍 Row ${rowIndex} geometry string:`, {
+              length: geometryString.length,
+              start: geometryString.substring(0, 50),
+              end: geometryString.substring(geometryString.length - 50),
+              fullString: geometryString,
+            });
+          }
+
+          // Check for potential truncation issues
+          if (geometryString.length >= 32766) {
+            console.log(
+              `⚠️  Row ${rowIndex}: Geometry string is very long (${geometryString.length} chars) - may have truncation issues`
+            );
+          }
+
+          // Parse the geometry directly (no concatenation needed)
+          let geometryData;
+
+          // First, check if the string is already valid GeoJSON
+          if (geometryString.trim().startsWith('{"type"')) {
+            try {
+              geometryData = JSON.parse(geometryString);
+              console.log(
+                `✅ Row ${rowIndex}: Geometry string is already valid GeoJSON`
+              );
+            } catch (parseError) {
+              console.log(
+                `⚠️  Row ${rowIndex}: Valid GeoJSON structure but parsing failed:`,
+                parseError.message
+              );
+              return; // Skip this feature
+            }
+          } else {
+            // Try to fix common malformed string issues
+            let fixedString = geometryString;
+            let fixAttempted = false;
+
+            // Fix 1: Add missing opening brace if string starts with ",[["
+            if (geometryString.startsWith(",[[")) {
+              fixedString =
+                '{"type":"MultiPolygon","coordinates":' +
+                geometryString.substring(1);
+              fixAttempted = true;
+              console.log(
+                `🔧 Attempting to fix malformed string by adding missing GeoJSON structure`
+              );
+            }
+
+            // Fix 2: Add missing opening brace if string starts with "[["
+            if (geometryString.startsWith("[[")) {
+              fixedString =
+                '{"type":"MultiPolygon","coordinates":' + geometryString;
+              fixAttempted = true;
+              console.log(
+                `🔧 Attempting to fix malformed string by adding missing GeoJSON structure`
+              );
+            }
+
+            // Fix 3: If string starts with just coordinates, wrap it properly
+            if (
+              geometryString.startsWith("[[[") &&
+              !geometryString.startsWith('{"')
+            ) {
+              fixedString =
+                '{"type":"MultiPolygon","coordinates":' + geometryString + "}";
+              fixAttempted = true;
+              console.log(
+                `🔧 Attempting to fix malformed string by wrapping in complete GeoJSON structure`
+              );
+            }
+
+            // Try to parse the fixed string
+            if (fixAttempted) {
+              try {
+                geometryData = JSON.parse(fixedString);
+                console.log(
+                  `✅ Successfully fixed and parsed geometry string for row ${rowIndex}`
+                );
+              } catch (fixError) {
+                console.log(
+                  `❌ Could not fix malformed geometry string for row ${rowIndex}:`,
+                  fixError.message
+                );
+                return; // Skip this feature
+              }
+            } else {
+              return; // Skip this feature
+            }
+          }
+
+          if (geometryData && geometryData.type) {
+            const choroplethData: PowerBIChoroplethData = {
+              adminCode:
+                indices.adminCodeColIndex >= 0
+                  ? String(row[indices.adminCodeColIndex])
+                  : null,
+              geometry: geometryData,
+              choroplethValue:
+                indices.valueColIndex >= 0
+                  ? parseFloat(String(row[indices.valueColIndex])) || 0
+                  : 0,
+              countryName:
+                indices.countryNameColIndex >= 0
+                  ? String(row[indices.countryNameColIndex])
+                  : "Unknown",
+              isoCode:
+                indices.isoCodeColIndex >= 0
+                  ? String(row[indices.isoCodeColIndex])
+                  : "",
+              continent:
+                indices.continentColIndex >= 0
+                  ? String(row[indices.continentColIndex])
+                  : "",
+              tooltipData: new Map(),
+            };
+
+            // Process tooltip data
+            indices.tooltipColIndices.forEach((tooltipIndex) => {
+              if (
+                row[tooltipIndex] !== null &&
+                row[tooltipIndex] !== undefined
+              ) {
+                const columnName = columns[tooltipIndex].displayName;
+                choroplethData.tooltipData.set(columnName, row[tooltipIndex]);
+              }
+            });
+
+            this.powerBIChoroplethData.push(choroplethData);
+
+            console.log(
+              `✅ Processed flattened feature ${rowIndex} (${choroplethData.countryName})`
+            );
+          }
+        } catch (error) {
+          console.error(
+            `Error processing flattened feature ${rowIndex}:`,
+            error
+          );
+        }
+      });
+
+      return; // Exit early for flattened structure
+    }
+
+    // Original split-rows logic for actual multi-part features
+    console.log("🔍 Processing actual split-rows structure with concatenation");
+
+    // Process each feature group
+    featureGroups.forEach((rows, groupKey) => {
       try {
-        for (let i = 0; i < values.length; i++) {
-          const row = values[i];
+        // Sort rows by geometryPart if available, otherwise by row order
+        if (indices.geometryPartColIndex >= 0) {
+          rows.sort(
+            (a, b) =>
+              a[indices.geometryPartColIndex] - b[indices.geometryPartColIndex]
+          );
+        }
 
-          // Validate latitude and longitude values
-          const lat = parseFloat(row[0]?.toString() || "");
-          const lng = parseFloat(row[1]?.toString() || "");
+        // Reconstruct the full geometry string
+        let fullGeometryString = "";
+        rows.forEach((row) => {
+          const geometryString = String(row[indices.geometryColIndex]);
+          fullGeometryString += geometryString;
+        });
 
-          // Check if coordinates are valid numbers and within reasonable bounds
+        // Check for potential truncation issues
+        if (fullGeometryString.length >= 32766) {
+          console.log(
+            `⚠️  Feature ${groupKey}: Combined geometry string is very long (${fullGeometryString.length} chars) - may have truncation issues`
+          );
+        }
+
+        // Parse the reconstructed geometry
+        let geometryData;
+        try {
+          geometryData = JSON.parse(fullGeometryString);
+        } catch (parseError) {
+          // Check if this is a truncation error
           if (
-            row[0] !== null &&
-            row[0] !== undefined &&
-            row[1] !== null &&
-            row[1] !== undefined &&
-            !isNaN(lat) &&
-            !isNaN(lng) &&
-            lat >= -90 &&
-            lat <= 90 &&
-            lng >= -180 &&
-            lng <= 180
+            parseError.message.includes("position 32766") ||
+            parseError.message.includes(
+              "Expected ',' or ']' after array element"
+            )
           ) {
-            // Create custom marker with exact color #22294d
-            const customMarkerIcon = L.divIcon({
-              className: "custom-marker",
-              html: `
+            console.log(
+              `❌ Feature ${groupKey}: JSON truncated by Power BI at position 32766. This is a Power BI limitation. Consider using the JSON import method instead of CSV/Excel.`
+            );
+          } else {
+            console.log(
+              `⚠️  Feature ${groupKey}: Could not parse reconstructed geometry string: ${parseError.message}`
+            );
+          }
+          return; // Skip this feature
+        }
+
+        if (geometryData && geometryData.type) {
+          // Use the first row for metadata
+          const firstRow = rows[0];
+
+          const choroplethData: PowerBIChoroplethData = {
+            adminCode:
+              indices.adminCodeColIndex >= 0
+                ? String(firstRow[indices.adminCodeColIndex])
+                : null,
+            geometry: geometryData,
+            choroplethValue:
+              indices.valueColIndex >= 0
+                ? parseFloat(String(firstRow[indices.valueColIndex])) || 0
+                : 0,
+            countryName:
+              indices.countryNameColIndex >= 0
+                ? String(firstRow[indices.countryNameColIndex])
+                : "Unknown",
+            isoCode:
+              indices.isoCodeColIndex >= 0
+                ? String(firstRow[indices.isoCodeColIndex])
+                : "",
+            continent:
+              indices.continentColIndex >= 0
+                ? String(firstRow[indices.continentColIndex])
+                : "",
+            tooltipData: new Map(),
+          };
+
+          // Process tooltip data from the first row
+          indices.tooltipColIndices.forEach((tooltipIndex) => {
+            if (
+              firstRow[tooltipIndex] !== null &&
+              firstRow[tooltipIndex] !== undefined
+            ) {
+              const columnName = columns[tooltipIndex].displayName;
+              choroplethData.tooltipData.set(
+                columnName,
+                firstRow[tooltipIndex]
+              );
+            }
+          });
+
+          this.powerBIChoroplethData.push(choroplethData);
+
+          console.log(
+            `✅ Reconstructed geometry for ${groupKey} (${choroplethData.countryName}) from ${rows.length} parts`
+          );
+        }
+      } catch (error) {
+        console.error(
+          `Error processing split-rows feature ${groupKey}:`,
+          error
+        );
+      }
+    });
+  }
+
+  private processTraditionalData(values: any[], columns: any[], indices: any) {
+    for (let i = 0; i < values.length; i++) {
+      const row = values[i];
+
+      // Check if this row has choropleth geometry data
+      if (indices.geometryColIndex >= 0 && row[indices.geometryColIndex]) {
+        try {
+          // Get geometry data directly (no concatenation needed with JSON approach)
+          let geometryData;
+
+          // Handle both string and object inputs
+          if (typeof row[indices.geometryColIndex] === "object") {
+            geometryData = row[indices.geometryColIndex];
+          } else {
+            const geometryString = String(row[indices.geometryColIndex]);
+
+            // Check if Power BI converted the geometry to "[Record]" text
+            if (
+              geometryString === "[Record]" ||
+              geometryString === "[Object]"
+            ) {
+              console.log(
+                `⚠️  Row ${i}: Power BI converted geometry to "${geometryString}" - skipping this row`
+              );
+              continue; // Skip this row as we can't parse it
+            }
+
+            // Check for truncated JSON (common Power BI issue)
+            if (geometryString.length >= 32766) {
+              console.log(
+                `⚠️  Row ${i}: Geometry string is very long (${geometryString.length} chars) - may be truncated by Power BI`
+              );
+            }
+
+            try {
+              geometryData = JSON.parse(geometryString);
+            } catch (parseError) {
+              // Check if this is a truncation error
+              if (
+                parseError.message.includes("position 32766") ||
+                parseError.message.includes(
+                  "Expected ',' or ']' after array element"
+                )
+              ) {
+                console.log(
+                  `❌ Row ${i}: JSON truncated by Power BI at position 32766. This is a Power BI limitation. Consider using the JSON import method instead of CSV/Excel.`
+                );
+              } else {
+                console.log(
+                  `⚠️  Row ${i}: Could not parse geometry string: ${geometryString.substring(
+                    0,
+                    100
+                  )}... Error: ${parseError.message}`
+                );
+              }
+              continue; // Skip this row
+            }
+          }
+
+          // Log country info for debugging
+          const countryName =
+            indices.countryNameColIndex >= 0
+              ? String(row[indices.countryNameColIndex])
+              : "Unknown";
+          const adminCode =
+            indices.adminCodeColIndex >= 0
+              ? String(row[indices.adminCodeColIndex])
+              : "Unknown";
+          console.log(
+            `Row ${i}: ${countryName} (${adminCode}) - Geometry type: ${
+              geometryData?.type || "Unknown"
+            }`
+          );
+
+          if (geometryData && geometryData.type) {
+            const choroplethData: PowerBIChoroplethData = {
+              adminCode:
+                indices.adminCodeColIndex >= 0
+                  ? String(row[indices.adminCodeColIndex])
+                  : null,
+              geometry: geometryData,
+              choroplethValue:
+                indices.valueColIndex >= 0
+                  ? parseFloat(String(row[indices.valueColIndex])) || 0
+                  : 0,
+              countryName: countryName,
+              isoCode:
+                indices.isoCodeColIndex >= 0
+                  ? String(row[indices.isoCodeColIndex])
+                  : "",
+              continent:
+                indices.continentColIndex >= 0
+                  ? String(row[indices.continentColIndex])
+                  : "",
+              tooltipData: new Map(),
+            };
+
+            // Process tooltip data
+            indices.tooltipColIndices.forEach((tooltipIndex) => {
+              if (
+                row[tooltipIndex] !== null &&
+                row[tooltipIndex] !== undefined
+              ) {
+                const columnName = columns[tooltipIndex].displayName;
+                choroplethData.tooltipData.set(columnName, row[tooltipIndex]);
+              }
+            });
+
+            this.powerBIChoroplethData.push(choroplethData);
+          }
+        } catch (error) {
+          console.error(`Error parsing geometry data for row ${i}:`, error);
+        }
+      }
+    }
+  }
+
+  private processMarkerData(dataView: DataView) {
+    if (!dataView.table || !dataView.table.columns || !dataView.table.rows) {
+      return;
+    }
+
+    const columns = dataView.table.columns;
+    const values = dataView.table.rows;
+
+    // Find column indices for marker data
+    const latColIndex = columns.findIndex((col) => col.roles?.latitude);
+    const lngColIndex = columns.findIndex((col) => col.roles?.longitude);
+
+    // Fallback: If roles are not found, try to detect by column names
+    let fallbackLatColIndex = -1;
+    let fallbackLngColIndex = -1;
+
+    if (latColIndex === -1 || lngColIndex === -1) {
+      console.log(
+        "⚠️  Latitude/Longitude roles not found, attempting fallback detection by column names..."
+      );
+
+      fallbackLatColIndex = columns.findIndex(
+        (col) =>
+          col.displayName.toLowerCase().includes("lat") ||
+          col.displayName.toLowerCase().includes("latitude") ||
+          col.displayName.toLowerCase().includes("y") ||
+          col.displayName === "Latitude" ||
+          col.displayName === "latitude"
+      );
+
+      fallbackLngColIndex = columns.findIndex(
+        (col) =>
+          col.displayName.toLowerCase().includes("lng") ||
+          col.displayName.toLowerCase().includes("longitude") ||
+          col.displayName.toLowerCase().includes("x") ||
+          col.displayName === "Longitude" ||
+          col.displayName === "longitude"
+      );
+
+      console.log("🔍 Fallback column detection:", {
+        fallbackLatColIndex: fallbackLatColIndex,
+        fallbackLngColIndex: fallbackLngColIndex,
+        fallbackLatName:
+          fallbackLatColIndex >= 0
+            ? columns[fallbackLatColIndex].displayName
+            : "NOT FOUND",
+        fallbackLngName:
+          fallbackLngColIndex >= 0
+            ? columns[fallbackLngColIndex].displayName
+            : "NOT FOUND",
+      });
+    }
+
+    // Use fallback indices if primary roles are not found
+    const finalLatColIndex =
+      latColIndex >= 0 ? latColIndex : fallbackLatColIndex;
+    const finalLngColIndex =
+      lngColIndex >= 0 ? lngColIndex : fallbackLngColIndex;
+
+    const tooltipColIndices = columns
+      .map((col, index) => (col.roles?.tooltip ? index : -1))
+      .filter((index) => index !== -1);
+
+    // Add comprehensive debugging
+    console.log("🔍 Marker processing debug info:", {
+      totalRows: values.length,
+      latColIndex: latColIndex,
+      lngColIndex: lngColIndex,
+      fallbackLatColIndex: fallbackLatColIndex,
+      fallbackLngColIndex: fallbackLngColIndex,
+      finalLatColIndex: finalLatColIndex,
+      finalLngColIndex: finalLngColIndex,
+      latColName:
+        finalLatColIndex >= 0
+          ? columns[finalLatColIndex].displayName
+          : "NOT FOUND",
+      lngColName:
+        finalLngColIndex >= 0
+          ? columns[finalLngColIndex].displayName
+          : "NOT FOUND",
+      tooltipColIndices: tooltipColIndices,
+      allColumns: columns.map((col, idx) => ({
+        index: idx,
+        name: col.displayName,
+        roles: col.roles,
+        hasLatitude: col.roles?.latitude ? "YES" : "NO",
+        hasLongitude: col.roles?.longitude ? "YES" : "NO",
+      })),
+    });
+
+    // Debug: Show first few rows of data
+    if (values.length > 0) {
+      console.log(
+        "🔍 First 3 rows of marker data:",
+        values.slice(0, 3).map((row, idx) => ({
+          rowIndex: idx,
+          latValue: finalLatColIndex >= 0 ? row[finalLatColIndex] : "N/A",
+          lngValue: finalLngColIndex >= 0 ? row[finalLngColIndex] : "N/A",
+          latType: finalLatColIndex >= 0 ? typeof row[finalLatColIndex] : "N/A",
+          lngType: finalLngColIndex >= 0 ? typeof row[finalLngColIndex] : "N/A",
+          latNull:
+            finalLatColIndex >= 0 ? row[finalLatColIndex] === null : "N/A",
+          lngNull:
+            finalLngColIndex >= 0 ? row[finalLngColIndex] === null : "N/A",
+        }))
+      );
+    }
+
+    let processedCount = 0;
+    let skippedCount = 0;
+    let invalidCoordCount = 0;
+    let loopIterations = 0;
+
+    for (let i = 0; i < values.length; i++) {
+      loopIterations++;
+      const row = values[i];
+
+      // Debug: Log each row being processed
+      if (i < 5) {
+        // Only log first 5 rows to avoid spam
+        console.log(`🔍 Processing row ${i}:`, {
+          latValue: finalLatColIndex >= 0 ? row[finalLatColIndex] : "N/A",
+          lngValue: finalLngColIndex >= 0 ? row[finalLngColIndex] : "N/A",
+          latNull:
+            finalLatColIndex >= 0 ? row[finalLatColIndex] === null : "N/A",
+          lngNull:
+            finalLngColIndex >= 0 ? row[finalLngColIndex] === null : "N/A",
+        });
+      }
+
+      // Check if this row has marker coordinates (and is not a choropleth feature)
+      if (
+        finalLatColIndex >= 0 &&
+        finalLngColIndex >= 0 &&
+        row[finalLatColIndex] !== null &&
+        row[finalLngColIndex] !== null
+      ) {
+        const lat = parseFloat(row[finalLatColIndex].toString());
+        const lng = parseFloat(row[finalLngColIndex].toString());
+
+        if (
+          !isNaN(lat) &&
+          !isNaN(lng) &&
+          lat >= -90 &&
+          lat <= 90 &&
+          lng >= -180 &&
+          lng <= 180
+        ) {
+          // Create custom marker
+          const customMarkerIcon = L.divIcon({
+            className: "custom-marker",
+            html: `
               <svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">
                 <path d="M12.5 0C5.596 0 0 5.596 0 12.5c0 9.375 12.5 28.5 12.5 28.5s12.5-19.125 12.5-28.5C25 5.596 19.404 0 12.5 0z" fill="#22294d"/>
                 <circle cx="12.5" cy="12.5" r="6" fill="white"/>
               </svg>
             `,
-              iconSize: [25, 41],
-              iconAnchor: [12, 41],
-              popupAnchor: [1, -34],
-              tooltipAnchor: [16, -28],
-            });
+            iconSize: [25, 41],
+            iconAnchor: [12, 41],
+            popupAnchor: [1, -34],
+            tooltipAnchor: [16, -28],
+          });
 
-            // Build dynamic tooltip content from tooltip fields
-            let tooltipContent = "";
-
-            // Try to get field names from the dataView metadata
-            const tooltipFields = dataView.table.columns.filter(
-              (col) => col.roles && col.roles.tooltip
-            );
-
-            if (tooltipFields.length > 0) {
-              // Build tooltip with field names and values
-              const tooltipParts = [];
-              for (const field of tooltipFields) {
-                const columnIndex = dataView.table.columns.indexOf(field);
-
-                if (
-                  columnIndex >= 0 &&
-                  row[columnIndex] !== null &&
-                  row[columnIndex] !== undefined &&
-                  row[columnIndex] !== "NA"
-                ) {
-                  const fieldName = field.displayName;
-                  const fieldValue = row[columnIndex].toString();
-                  tooltipParts.push(
-                    `<div class="tooltip-row"><span class="field-name">${fieldName}</span><span class="field-value">${fieldValue}</span></div>`
-                  );
-                }
+          // Build tooltip content
+          let tooltipContent = "";
+          if (tooltipColIndices.length > 0) {
+            const tooltipParts = [];
+            for (const tooltipIndex of tooltipColIndices) {
+              if (
+                row[tooltipIndex] !== null &&
+                row[tooltipIndex] !== undefined
+              ) {
+                const fieldName = columns[tooltipIndex].displayName;
+                const fieldValue = row[tooltipIndex].toString();
+                tooltipParts.push(
+                  `<div class="tooltip-row"><span class="field-name">${fieldName}</span><span class="field-value">${fieldValue}</span></div>`
+                );
               }
-
-              if (tooltipParts.length > 0) {
-                tooltipContent = tooltipParts.join("");
-              } else {
-                // If no valid tooltip fields, show basic location info
-                const lat =
-                  row[0] !== null && row[0] !== undefined
-                    ? row[0].toString()
-                    : "N/A";
-                const lng =
-                  row[1] !== null && row[1] !== undefined
-                    ? row[1].toString()
-                    : "N/A";
-                tooltipContent = `<div class="tooltip-row"><span class="field-name">Latitude</span><span class="field-value">${lat}</span></div><div class="tooltip-row"><span class="field-name">Longitude</span><span class="field-value">${lng}</span></div>`;
-              }
-            } else {
-              // Fallback: show basic location info
-              const lat =
-                row[0] !== null && row[0] !== undefined
-                  ? row[0].toString()
-                  : "N/A";
-              const lng =
-                row[1] !== null && row[1] !== undefined
-                  ? row[1].toString()
-                  : "N/A";
-              tooltipContent = `<div class="tooltip-row"><span class="field-name">Latitude</span><span class="field-value">${lat}</span></div><div class="tooltip-row"><span class="field-name">Longitude</span><span class="field-value">${lng}</span></div>`;
             }
+            tooltipContent = tooltipParts.join("");
+          } else {
+            tooltipContent = `<div class="tooltip-row"><span class="field-name">Latitude</span><span class="field-value">${lat}</span></div><div class="tooltip-row"><span class="field-name">Longitude</span><span class="field-value">${lng}</span></div>`;
+          }
 
-            const marker = L.marker([lat, lng], {
-              icon: customMarkerIcon,
-              adminCode:
-                row[2] !== null && row[2] !== undefined && row[2] !== "NA"
-                  ? parseFloat(row[2].toString())
-                  : null,
-            }).addTo(this.map);
+          const marker = L.marker([lat, lng], {
+            icon: customMarkerIcon,
+          }).addTo(this.map);
 
-            (marker as any).options.selectionId = this.selectionIds[i];
-            this.markers.push(marker);
+          (marker as any).options.selectionId = this.selectionIds[i];
+          this.markers.push(marker);
 
-            marker.on("click", (event) => {
-              console.log(
-                `Marker clicked: index ${i}, selectionId:`,
-                this.selectionIds[i]
-              );
+          marker.on("click", (event) => {
+            console.log(`Marker clicked: index ${i}`);
+            this.showTooltip(tooltipContent, event.latlng);
 
-              // Show tooltip on click
-              this.showTooltip(tooltipContent, event.latlng);
+            const currentDataContext = this.getCurrentDataContext();
 
-              // Get current data context to understand what's filtered
-              const currentDataContext = this.getCurrentDataContext();
+            this.selectionManager
+              .select(this.selectionIds[i])
+              .then((ids: ISelectionId[]) => {
+                console.log("Selection result:", ids);
+                this.currentSelection = ids;
+                this.persistentSelection = [...ids];
 
-              this.selectionManager
-                .select(this.selectionIds[i])
-                .then((ids: ISelectionId[]) => {
-                  console.log("Selection result:", ids);
-                  console.log("Current data context:", currentDataContext);
-                  console.log("Previous selection:", this.currentSelection);
+                if (ids.length === 0) {
+                  this.handleMarkerDeselection(i);
+                } else {
+                  this.updateMarkersVisibility(ids);
+                }
+              })
+              .catch((error) => {
+                console.error("Error in marker selection:", error);
+                this.updateMarkersVisibility(this.selectionIds);
+              });
 
-                  // Check if this is a deselection (clicking the same marker again)
-                  const wasPreviouslySelected = this.persistentSelection.some(
-                    (selectedId) =>
-                      this.compareSelectionIds(this.selectionIds[i], selectedId)
-                  );
-                  const isCurrentlySelected = ids.some((selectedId) =>
-                    this.compareSelectionIds(this.selectionIds[i], selectedId)
-                  );
+            L.DomEvent.stopPropagation(event);
+          });
 
-                  // Update both current and persistent selection state
-                  this.currentSelection = ids;
-                  this.persistentSelection = [...ids]; // Create a copy to persist
+          processedCount++;
 
-                  // Handle the selection/deselection logic
-                  if (ids.length === 0) {
-                    // No selection returned - this could be a deselection or error
-                    if (wasPreviouslySelected) {
-                      // This is a deselection - show all current context markers
-                      console.log(
-                        "Marker deselected - showing all current markers"
-                      );
-                      this.handleMarkerDeselection(i);
-                    } else {
-                      // This might be an error - show all markers from original data
-                      console.log(
-                        "No selection returned - showing all markers"
-                      );
-                      this.updateMarkersVisibility(this.selectionIds);
-                    }
-                  } else if (!isCurrentlySelected) {
-                    // Selection returned but clicked marker is not in it
-                    // This is likely a deselection
-                    console.log(
-                      "Marker not in selection - showing all current markers"
-                    );
-                    this.handleMarkerDeselection(i);
-                  } else {
-                    // Show the selected markers
-                    console.log("Showing selected markers");
-                    this.updateMarkersVisibility(ids);
-                  }
-                })
-                .catch((error) => {
-                  console.error("Error in marker selection:", error);
-                  // Fallback: show all markers from original data
-                  this.updateMarkersVisibility(this.selectionIds);
-                });
-
-              // To prevent the default behavior of propagating the event to the map.
-              L.DomEvent.stopPropagation(event);
-            });
+          // Debug: Log successful marker creation
+          if (i < 5) {
+            console.log(`✅ Created marker ${i} at [${lat}, ${lng}]`);
+          }
+        } else {
+          invalidCoordCount++;
+          if (i < 5) {
+            console.log(
+              `❌ Row ${i}: Invalid coordinates - lat: ${lat}, lng: ${lng}`
+            );
           }
         }
-      } catch (error) {
-        console.error("Error in marker creation loop:", error);
+      } else {
+        skippedCount++;
+        if (i < 5) {
+          console.log(
+            `⏭️  Row ${i}: Skipped - finalLatColIndex: ${finalLatColIndex}, finalLngColIndex: ${finalLngColIndex}, latValue: ${
+              finalLatColIndex >= 0 ? row[finalLatColIndex] : "N/A"
+            }, lngValue: ${
+              finalLngColIndex >= 0 ? row[finalLngColIndex] : "N/A"
+            }`
+          );
+        }
       }
-
-      // Log summary of marker creation
-      console.log(
-        `Marker creation completed: ${this.markers.length} valid markers created`
-      );
-
-      // Use comprehensive empty state check with proper timing
-      this.performEmptyStateCheck();
-
-      // Restore previous selection state if needed
-      this.restoreSelectionState();
-
-      // Additional empty state check with longer delay for packaged version
-      this.performDelayedEmptyStateCheck();
-    } catch (error) {
-      console.error("Error in visual update:", error);
-      // Fallback: show empty state if there's an error
-      this.showEmptyState();
     }
+
+    console.log(`📊 Marker processing summary:`, {
+      totalRows: values.length,
+      loopIterations: loopIterations,
+      processed: processedCount,
+      skipped: skippedCount,
+      invalidCoordinates: invalidCoordCount,
+      createdMarkers: this.markers.length,
+    });
+  }
+
+  private updateChoroplethLayer() {
+    if (!this.choroplethLayer) {
+      return;
+    }
+
+    // Clear existing choropleth layer
+    this.choroplethLayer.clearLayers();
+
+    if (this.powerBIChoroplethData.length === 0) {
+      return;
+    }
+
+    // Create GeoJSON features from Power BI data
+    const features = this.powerBIChoroplethData.map((data) => {
+      return {
+        type: "Feature",
+        properties: {
+          adminCode: data.adminCode,
+          choropleth_value: data.choroplethValue,
+          name: data.countryName,
+          isoCode: data.isoCode,
+          continent: data.continent,
+          tooltipData: data.tooltipData,
+        },
+        geometry: data.geometry,
+      };
+    });
+
+    const geoJsonData = {
+      type: "FeatureCollection",
+      features: features,
+    };
+
+    // Add data to choropleth layer
+    this.choroplethLayer.addData(geoJsonData);
+
+    // Add to map if not already added
+    if (!this.map.hasLayer(this.choroplethLayer)) {
+      this.choroplethLayer.addTo(this.map);
+    }
+
+    // Fit map bounds to show all choropleth features
+    if (features.length > 0 && this.choroplethLayer.getBounds) {
+      try {
+        const bounds = this.choroplethLayer.getBounds();
+        if (bounds.isValid()) {
+          this.map.fitBounds(bounds, { padding: [20, 20] });
+        }
+      } catch (error) {
+        console.log("Could not fit bounds, using default view");
+      }
+    }
+
+    console.log(`Updated choropleth layer with ${features.length} features`);
+  }
+
+  private clearAllData() {
+    console.log("🧹 clearAllData called - clearing all visual data");
+
+    // Clear markers
+    this.markers.forEach((marker) => {
+      this.map.removeLayer(marker);
+    });
+    this.markers = [];
+
+    // Clear choropleth layer
+    if (this.choroplethLayer) {
+      this.choroplethLayer.clearLayers();
+    }
+
+    // Clear selection state
+    this.currentSelection = [];
+    this.persistentSelection = [];
+    this.selectionIds = [];
+
+    // Clear choropleth data
+    this.powerBIChoroplethData = [];
+
+    console.log("🧹 clearAllData completed - all data cleared");
   }
 
   private updateMarkersVisibility(selectedIds: ISelectionId[]) {
     let visibleMarkers = 0;
     let hiddenMarkers = 0;
 
-    console.log("Updating markers visibility:", {
-      totalMarkers: this.markers.length,
-      selectedIdsCount: selectedIds.length,
-      selectedIds: selectedIds,
-    });
-
     this.markers.forEach((marker, index) => {
       const markerSelectionId = (marker as any).options.selectionId;
-
-      // More robust selection comparison
       const isSelected = selectedIds.some((id) => {
-        // Try different comparison methods
         if (id.getKey && markerSelectionId.getKey) {
           return id.getKey() === markerSelectionId.getKey();
         }
@@ -791,18 +1582,14 @@ export class Visual implements IVisual {
       });
 
       if (selectedIds.length > 0 && !isSelected) {
-        // Hide marker if it's not in the selected list
         if (this.map.hasLayer(marker)) {
           this.map.removeLayer(marker);
           hiddenMarkers++;
-          console.log(`Hidden marker ${index}`);
         }
       } else {
-        // Show marker if it's selected or if no selection (show all current markers)
         if (!this.map.hasLayer(marker)) {
           marker.addTo(this.map);
           visibleMarkers++;
-          console.log(`Shown marker ${index}`);
         } else {
           visibleMarkers++;
         }
@@ -813,175 +1600,11 @@ export class Visual implements IVisual {
       visibleMarkers,
       hiddenMarkers,
     });
-
-    // Use comprehensive empty state check for consistency
     this.performEmptyStateCheck();
   }
 
-  private processGeoJsonData(geoJsonData: any) {
-    // Process the GeoJSON data to add choropleth values based on your data structure
-    if (geoJsonData.features) {
-      geoJsonData.features.forEach((feature: any) => {
-        // Add choropleth_value based on your data properties
-        // You can customize this based on your specific needs
-        if (feature.properties) {
-          // Example: use gaul_code as a basis for choropleth value
-          if (feature.properties.gaul_code) {
-            feature.properties.choropleth_value =
-              (feature.properties.gaul_code % 100) / 100;
-          } else {
-            feature.properties.choropleth_value = Math.random(); // Fallback random value
-          }
-
-          // Ensure we have a name for popups
-          if (!feature.properties.name) {
-            feature.properties.name =
-              feature.properties.gaul0_name ||
-              feature.properties.disp_en ||
-              "Unknown Region";
-          }
-        }
-      });
-    }
-  }
-
-  private addDefaultChoroplethLayer(geoJsonData: any) {
-    // Clear existing choropleth layer
-    if (this.choroplethLayer) {
-      this.map.removeLayer(this.choroplethLayer);
-    }
-
-    // Create a default choropleth layer with the loaded GeoJSON
-    this.choroplethLayer = L.geoJSON(geoJsonData, {
-      style: (feature) => this.getDefaultChoroplethStyle(feature),
-      onEachFeature: (feature, layer) =>
-        this.onEachChoroplethFeature(feature, layer),
-    }).addTo(this.map);
-
-    // Fit map to show all features
-    if (this.choroplethLayer.getBounds) {
-      const bounds = this.choroplethLayer.getBounds();
-
-      // this.map.fitBounds(bounds); // Commented out to preserve custom zoom level
-    }
-  }
-
-  private getDefaultChoroplethStyle(feature: any) {
-    // Enhanced styling for the loaded GeoJSON based on Leaflet GeoJSON examples
-    const featureGaulCode = feature.properties?.gaul_code;
-    const shouldApplyChoropleth =
-      this.currentAdminCodes.length > 0 &&
-      (this.currentAdminCodes.includes(featureGaulCode) ||
-        this.currentAdminCodes.includes(featureGaulCode?.toString()) ||
-        this.currentAdminCodes.includes(parseFloat(featureGaulCode)));
-
-    // Debug logging for first few features
-    if (feature.properties?.gaul0_name && this.currentAdminCodes.length > 0) {
-      console.log(
-        `Feature: ${feature.properties.gaul0_name}, gaul_code: ${featureGaulCode}, shouldApply: ${shouldApplyChoropleth}`
-      );
-    }
-
-    // Check if this country has NA admin code in the data
-    const hasNAAdminCode = this.hasNAAdminCodeForCountry(featureGaulCode);
-
-    if (hasNAAdminCode) {
-      return {
-        fillColor: "#F2F2F2",
-        weight: 1,
-        opacity: 1,
-        color: "#ccc",
-        fillOpacity: 0.7,
-      };
-    } else if (shouldApplyChoropleth) {
-      return {
-        fillColor: "#455E6F",
-        weight: 1,
-        opacity: 1,
-        color: "#666",
-        fillOpacity: 0.7,
-      };
-    } else {
-      return {
-        fillColor: "transparent",
-        weight: 1,
-        opacity: 1,
-        color: "#ccc",
-        fillOpacity: 0,
-      };
-    }
-  }
-
-  // Method to find country by coordinates
-  private findCountryByCoordinates(lat: number, lng: number): number | null {
-    // Use the embedded countries data to find which country contains this point
-    const countries = this.getEmbeddedCountries();
-
-    for (const feature of countries) {
-      if (feature.geometry && feature.geometry.coordinates) {
-        // Simple point-in-polygon check
-        if (this.isPointInPolygon(lat, lng, feature.geometry)) {
-          return feature.properties?.gaul_code || null;
-        }
-      }
-    }
-
-    return null;
-  }
-
-  // Simple point-in-polygon check
-  private isPointInPolygon(lat: number, lng: number, geometry: any): boolean {
-    // This is a simplified implementation
-    // For production, you'd want to use a proper library like turf.js
-
-    if (geometry.type === "Polygon") {
-      return this.isPointInPolygonCoords(lat, lng, geometry.coordinates[0]);
-    } else if (geometry.type === "MultiPolygon") {
-      for (const polygon of geometry.coordinates) {
-        if (this.isPointInPolygonCoords(lat, lng, polygon[0])) {
-          return true;
-        }
-      }
-    }
-
-    return false;
-  }
-
-  private isPointInPolygonCoords(
-    lat: number,
-    lng: number,
-    coords: number[][]
-  ): boolean {
-    // Ray casting algorithm
-    let inside = false;
-    for (let i = 0, j = coords.length - 1; i < coords.length; j = i++) {
-      const xi = coords[i][0],
-        yi = coords[i][1];
-      const xj = coords[j][0],
-        yj = coords[j][1];
-
-      if (
-        yi > lat !== yj > lat &&
-        lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi
-      ) {
-        inside = !inside;
-      }
-    }
-    return inside;
-  }
-
-  // Method to check if a country has NA admin code in the data
-  private hasNAAdminCodeForCountry(gaulCode: number): boolean {
-    return (
-      this.naAdminCodes.includes(gaulCode) ||
-      this.naAdminCodes.includes(gaulCode.toString())
-    );
-  }
-
-  // Method to show custom tooltip
   private showTooltip(content: string, latlng: L.LatLng) {
     if (this.tooltipDiv) {
-      // Add close button to the tooltip content
       const tooltipWithCloseButton = `
         <div style="position: relative;">
           <button 
@@ -1015,320 +1638,73 @@ export class Visual implements IVisual {
 
       this.tooltipDiv.innerHTML = tooltipWithCloseButton;
       this.tooltipDiv.style.opacity = "1";
-
-      // Position the tooltip in the top-left corner
       this.tooltipDiv.style.left = "10px";
       this.tooltipDiv.style.top = "10px";
     }
   }
 
-  // Method to hide custom tooltip
-  private hideTooltip() {
-    if (this.tooltipDiv) {
-      this.tooltipDiv.style.opacity = "0";
-    }
-  }
-
-  // Method to update tooltip interactions for a choropleth feature
-  private updateChoroplethTooltipInteraction(feature: any, layer: L.Layer) {
-    const featureGaulCode = feature.properties?.gaul_code;
-
-    // Check if this feature should have choropleth styling (active region)
-    const shouldApplyChoropleth =
-      this.currentAdminCodes.length > 0 &&
-      (this.currentAdminCodes.includes(featureGaulCode) ||
-        this.currentAdminCodes.includes(featureGaulCode?.toString()) ||
-        this.currentAdminCodes.includes(parseFloat(featureGaulCode)));
-
-    // Check if this feature has tooltip data
-    const hasTooltipData =
-      featureGaulCode && this.choroplethTooltipData.has(featureGaulCode);
-
-    // Remove existing tooltip events for all features
-    layer.off("mouseover");
-    layer.off("mouseout");
-
-    // Only add tooltip interactions for active choropleth regions that have tooltip data
-    if (shouldApplyChoropleth && hasTooltipData) {
-      // Build custom tooltip content for choropleth
-      const tooltipContent = this.buildChoroplethTooltipContent(feature);
-
-      // Add new tooltip events
-      layer.on({
-        click: (e) => {
-          const layer = e.target;
-          layer.setStyle({
-            weight: 3,
-            color: "#666",
-            fillOpacity: 0.9,
-          });
-          layer.bringToFront();
-
-          // Show custom tooltip on click
-          this.showTooltip(tooltipContent, e.latlng);
-
-          // Reset style after 2 seconds (keep highlighting shorter)
-          setTimeout(() => {
-            this.choroplethLayer.resetStyle(e.target);
-          }, 2000);
-        },
-      });
-    }
-  }
-
-  // Method to process choropleth tooltip data from Power BI
-  private processChoroplethTooltipData(dataView: DataView) {
-    this.choroplethTooltipData.clear();
-
-    if (!dataView.table || !dataView.table.columns || !dataView.table.rows) {
-      console.log("No data available for choropleth tooltips");
-      return;
-    }
-
-    // Find all choropleth tooltip columns
-    const choroplethTooltipColumns = dataView.table.columns.filter(
-      (col) => col.roles && col.roles.choroplethTooltip
-    );
-
-    if (choroplethTooltipColumns.length === 0) {
-      console.log("No choropleth tooltip columns found");
-      return;
-    }
-
-    const tooltipColumnIndices = choroplethTooltipColumns.map((col) =>
-      dataView.table.columns.indexOf(col)
-    );
-    const values = dataView.table.rows;
-
-    // Group tooltip data by admin code (only one entry per admin code)
-    const processedAdminCodes = new Set<number>();
-
-    for (let i = 0; i < values.length; i++) {
-      const row = values[i];
-      const adminCode = row[2]; // Admin code is in the 3rd column (index 2)
-
-      if (adminCode !== null && adminCode !== undefined && adminCode !== "NA") {
-        const adminCodeNum = parseFloat(adminCode.toString());
-        if (!isNaN(adminCodeNum) && !processedAdminCodes.has(adminCodeNum)) {
-          processedAdminCodes.add(adminCodeNum);
-
-          // Initialize array if it doesn't exist
-          if (!this.choroplethTooltipData.has(adminCodeNum)) {
-            this.choroplethTooltipData.set(adminCodeNum, []);
-          }
-
-          // Process all tooltip columns for this admin code
-          for (let j = 0; j < choroplethTooltipColumns.length; j++) {
-            const tooltipColumn = choroplethTooltipColumns[j];
-            const tooltipColumnIndex = tooltipColumnIndices[j];
-            const tooltipValue = row[tooltipColumnIndex];
-
-            // Only add if the tooltip value is meaningful
-            if (
-              tooltipValue !== null &&
-              tooltipValue !== undefined &&
-              tooltipValue !== "NA"
-            ) {
-              // Add to the array (don't overwrite)
-              this.choroplethTooltipData.get(adminCodeNum)!.push({
-                fieldName: tooltipColumn.displayName,
-                value: tooltipValue,
-              });
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // Method to build tooltip content for choropleth features
   private buildChoroplethTooltipContent(feature: any): string {
     const tooltipParts = [];
 
-    // Check if we have custom choropleth tooltip data for this feature
-    const featureGaulCode = feature.properties?.gaul_code;
-    const hasCustomTooltipData =
-      featureGaulCode && this.choroplethTooltipData.has(featureGaulCode);
+    // Add basic country info
+    const name =
+      feature.properties?.name ||
+      feature.properties?.countryName ||
+      "Unknown Region";
+    tooltipParts.push(
+      `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${name}</span></div>`
+    );
 
-    if (hasCustomTooltipData) {
-      // Only show custom tooltip data from Power BI
-      const tooltipData = this.choroplethTooltipData.get(featureGaulCode)!;
-      for (const data of tooltipData) {
-        if (
-          data.value !== null &&
-          data.value !== undefined &&
-          data.value !== "NA"
-        ) {
-          const fieldValue = data.value.toString();
-          tooltipParts.push(
-            `<div class="tooltip-row"><span class="field-name">${data.fieldName}</span><span class="field-value">${fieldValue}</span></div>`
-          );
-        }
-      }
-    } else {
-      // Fallback: show basic country info if no custom tooltip data
-      const name =
-        feature.properties?.name ||
-        feature.properties?.gaul0_name ||
-        feature.properties?.disp_en ||
-        "Unknown Region";
+    // Add choropleth value if available
+    if (
+      feature.properties?.choropleth_value !== null &&
+      feature.properties?.choropleth_value !== undefined
+    ) {
       tooltipParts.push(
-        `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${name}</span></div>`
+        `<div class="tooltip-row"><span class="field-name">Value</span><span class="field-value">${feature.properties.choropleth_value}</span></div>`
       );
+    }
+
+    // Add tooltip data if available
+    if (feature.properties?.tooltipData) {
+      const tooltipData = feature.properties.tooltipData;
+      if (tooltipData instanceof Map) {
+        tooltipData.forEach((value, key) => {
+          if (value !== null && value !== undefined && value !== "NA") {
+            tooltipParts.push(
+              `<div class="tooltip-row"><span class="field-name">${key}</span><span class="field-value">${value}</span></div>`
+            );
+          }
+        });
+      }
     }
 
     return tooltipParts.join("");
   }
 
-  // Method to show empty state message
   private showEmptyState() {
     if (this.emptyStateDiv) {
-      // Ensure the div is properly positioned and visible
       this.ensureEmptyStateDivPosition();
-
       this.emptyStateDiv.style.opacity = "1";
       this.emptyStateDiv.style.pointerEvents = "auto";
       this.emptyStateDiv.style.display = "block";
-
       console.log("Empty state shown - no distribution data available");
-    } else {
-      console.error("Empty state div not found - cannot show empty state");
     }
   }
 
-  // Method to check if there are any active choropleth regions
-  private hasActiveChoroplethData(): boolean {
-    try {
-      // Get all available choropleth admin codes from the map
-      const availableChoroplethCodes = new Set<number | string>();
-
-      if (this.choroplethLayer && this.choroplethLayer.getLayers) {
-        this.choroplethLayer.eachLayer((layer: any) => {
-          if (layer.feature && layer.feature.properties?.gaul_code) {
-            availableChoroplethCodes.add(layer.feature.properties.gaul_code);
-          }
-        });
-      }
-
-      // Check if any of our data admin codes match available choropleth codes
-      const matchingAdminCodes = this.currentAdminCodes.filter(
-        (code) =>
-          availableChoroplethCodes.has(code) ||
-          availableChoroplethCodes.has(
-            typeof code === "number" ? code.toString() : parseFloat(code)
-          )
-      );
-
-      // Check if any of our NA admin codes match available choropleth codes
-      const matchingNAAdminCodes = this.naAdminCodes.filter(
-        (code) =>
-          availableChoroplethCodes.has(code) ||
-          availableChoroplethCodes.has(
-            typeof code === "number" ? code.toString() : parseFloat(code)
-          )
-      );
-
-      // Check if there's any tooltip data for matching countries
-      const matchingTooltipCodes = Array.from(
-        this.choroplethTooltipData.entries()
-      ).filter(([adminCode, data]) => {
-        return data.length > 0 && availableChoroplethCodes.has(adminCode);
-      });
-
-      // A choropleth region is considered active if:
-      // 1. We have admin codes that match the choropleth map, OR
-      // 2. We have NA admin codes that match the choropleth map, OR
-      // 3. We have tooltip data for countries that match the choropleth map
-      const hasMatchingAdminCodes = matchingAdminCodes.length > 0;
-      const hasMatchingNAAdminCodes = matchingNAAdminCodes.length > 0;
-      const hasTooltipData = matchingTooltipCodes.length > 0;
-
-      const finalResult =
-        hasMatchingAdminCodes || hasMatchingNAAdminCodes || hasTooltipData;
-
-      console.log("Choropleth data check:", {
-        availableCodes: availableChoroplethCodes.size,
-        matchingAdminCodes: matchingAdminCodes.length,
-        matchingNAAdminCodes: matchingNAAdminCodes.length,
-        matchingTooltipCodes: matchingTooltipCodes.length,
-        hasActiveData: finalResult,
-      });
-
-      return finalResult;
-    } catch (error) {
-      console.error("Error in hasActiveChoroplethData:", error);
-      return false; // Return false to show empty state if there's an error
-    }
-  }
-
-  // Method to check if there's any distribution data (markers or choropleth)
-  private hasAnyDistributionData(): boolean {
-    try {
-      // Check if there are any markers created (regardless of visibility)
-      const totalMarkers = this.markers.length;
-
-      // Check if there are actually visible markers on the map
-      const visibleMarkers = this.markers.filter((marker) =>
-        this.map.hasLayer(marker)
-      ).length;
-
-      // Check if we have any data in the original dataset
-      const hasOriginalData = this.selectionIds.length > 0;
-
-      const hasMarkers = totalMarkers > 0 || visibleMarkers > 0;
-      const hasChoropleth = this.hasActiveChoroplethData();
-
-      // We have data if:
-      // 1. We have markers (total or visible), OR
-      // 2. We have choropleth data, OR
-      // 3. We have original data in selectionIds
-      const result = hasMarkers || hasChoropleth || hasOriginalData;
-
-      console.log("Distribution data check:", {
-        totalMarkers,
-        visibleMarkers,
-        hasOriginalData,
-        hasMarkers,
-        hasChoropleth,
-        hasAnyData: result,
-      });
-
-      return result;
-    } catch (error) {
-      console.error("Error in hasAnyDistributionData:", error);
-      return false; // Return false to show empty state if there's an error
-    }
-  }
-
-  // Method to hide empty state message
   private hideEmptyState() {
     if (this.emptyStateDiv) {
       this.emptyStateDiv.style.opacity = "0";
       this.emptyStateDiv.style.pointerEvents = "none";
       console.log("Empty state hidden - distribution data available");
-    } else {
-      console.error("Empty state div not found - cannot hide empty state");
     }
   }
 
-  // New method to perform a comprehensive empty state check with proper timing
   private performEmptyStateCheck(): void {
-    // Use setTimeout to ensure all async operations are complete
     setTimeout(() => {
       try {
-        // Ensure empty state div is properly positioned
         this.ensureEmptyStateDivPosition();
-
         const hasAnyData = this.hasAnyDistributionData();
-
-        console.log("Comprehensive empty state check:", {
-          hasAnyData,
-          markersCount: this.markers.length,
-          currentAdminCodesCount: this.currentAdminCodes.length,
-          naAdminCodesCount: this.naAdminCodes.length,
-          choroplethTooltipDataCount: this.choroplethTooltipData.size,
-          defaultGeoJsonLoaded: this.defaultGeoJsonLoaded,
-        });
 
         if (hasAnyData) {
           this.hideEmptyState();
@@ -1336,25 +1712,48 @@ export class Visual implements IVisual {
           this.showEmptyState();
         }
       } catch (error) {
-        console.error("Error in comprehensive empty state check:", error);
-        // Fallback: show empty state if there's an error
+        console.error("Error in empty state check:", error);
         this.showEmptyState();
       }
-    }, 100); // Small delay to ensure all operations are complete
+    }, 100);
   }
 
-  // Method to ensure empty state div is properly positioned and visible
+  private hasAnyDistributionData(): boolean {
+    try {
+      const totalMarkers = this.markers.length;
+      const visibleMarkers = this.markers.filter((marker) =>
+        this.map.hasLayer(marker)
+      ).length;
+      const hasChoroplethData = this.powerBIChoroplethData.length > 0;
+      const hasOriginalData = this.selectionIds.length > 0;
+
+      const result =
+        totalMarkers > 0 ||
+        visibleMarkers > 0 ||
+        hasChoroplethData ||
+        hasOriginalData;
+
+      console.log("Distribution data check:", {
+        totalMarkers,
+        visibleMarkers,
+        hasChoroplethData,
+        hasOriginalData,
+        hasAnyData: result,
+      });
+
+      return result;
+    } catch (error) {
+      console.error("Error in hasAnyDistributionData:", error);
+      return false;
+    }
+  }
+
   private ensureEmptyStateDivPosition(): void {
     if (this.emptyStateDiv && this.target) {
-      // Ensure the empty state div is a child of the target element
       if (this.emptyStateDiv.parentElement !== this.target) {
         this.target.appendChild(this.emptyStateDiv);
       }
-
-      // Ensure it has the correct z-index to be visible above the map
       this.emptyStateDiv.style.zIndex = "9999";
-
-      // Ensure it's positioned correctly
       this.emptyStateDiv.style.position = "absolute";
       this.emptyStateDiv.style.top = "50%";
       this.emptyStateDiv.style.left = "50%";
@@ -1362,101 +1761,9 @@ export class Visual implements IVisual {
     }
   }
 
-  // Method to update admin codes and refresh choropleth
-  public updateAdminCodes(adminCodes: (number | string)[]) {
-    this.currentAdminCodes = adminCodes;
-
-    // Refresh the choropleth layer if it exists
-    if (this.choroplethLayer) {
-      this.choroplethLayer.setStyle((feature) =>
-        this.getDefaultChoroplethStyle(feature)
-      );
-    }
-  }
-
-  // Method to handle visual destruction (called by PowerBI when visual is removed)
-  public destroy(): void {
-    try {
-      // Clean up map
-      if (this.map) {
-        this.map.remove();
-      }
-
-      // Clear markers
-      this.markers = [];
-
-      // Clear selection IDs
-      this.selectionIds = [];
-
-      // Clear tooltip data
-      this.choroplethTooltipData.clear();
-
-      // Reset state
-      this.currentAdminCodes = [];
-      this.naAdminCodes = [];
-      this.defaultGeoJsonLoaded = false;
-      this.currentSelection = [];
-      this.persistentSelection = [];
-
-      console.log("Visual destroyed and cleaned up");
-    } catch (error) {
-      console.error("Error during visual destruction:", error);
-    }
-  }
-
-  // Method to handle visual resize (called by PowerBI when visual is resized)
-  public onResize(): void {
-    try {
-      // Ensure map is properly sized
-      if (this.map) {
-        this.map.invalidateSize();
-      }
-
-      // Ensure empty state div is properly positioned after resize
-      this.ensureEmptyStateDivPosition();
-
-      // Re-check empty state after resize
-      this.performEmptyStateCheck();
-
-      console.log("Visual resized and updated");
-    } catch (error) {
-      console.error("Error during visual resize:", error);
-    }
-  }
-
-  // Method to clear all selections and show all markers
-  public clearSelection(): void {
-    try {
-      console.log("Clearing all selections");
-      this.selectionManager
-        .clear()
-        .then(() => {
-          // Reset both current and persistent selection state
-          this.currentSelection = [];
-          this.persistentSelection = [];
-          // Show only markers in current filtered context when selection is cleared
-          this.showOnlyCurrentContextMarkers();
-        })
-        .catch((error) => {
-          console.error("Error clearing selection:", error);
-          // Reset both current and persistent selection state
-          this.currentSelection = [];
-          this.persistentSelection = [];
-          // Fallback: show only current context markers
-          this.showOnlyCurrentContextMarkers();
-        });
-    } catch (error) {
-      console.error("Error in clearSelection:", error);
-    }
-  }
-
-  // Method to get current data context (filtered data)
   private getCurrentDataContext(): ISelectionId[] {
     try {
-      // Return the current selection IDs that correspond to the filtered data
-      // This represents what's currently visible in the visual
       return this.selectionIds.filter((id, index) => {
-        // Check if this marker is currently visible on the map
         return this.markers[index] && this.map.hasLayer(this.markers[index]);
       });
     } catch (error) {
@@ -1465,48 +1772,24 @@ export class Visual implements IVisual {
     }
   }
 
-  // Method to compare selection IDs robustly
-  private compareSelectionIds(id1: ISelectionId, id2: ISelectionId): boolean {
-    try {
-      // Try different comparison methods
-      if (id1.getKey && id2.getKey) {
-        return id1.getKey() === id2.getKey();
-      }
-      if (id1.toString && id2.toString) {
-        return id1.toString() === id2.toString();
-      }
-      return id1 === id2;
-    } catch (error) {
-      console.error("Error comparing selection IDs:", error);
-      return false;
-    }
-  }
-
-  // Method to show only markers that are in the current filtered context
-  private showOnlyCurrentContextMarkers(): void {
-    try {
-      console.log("Showing only markers in current filtered context");
-      // Show all markers from the original data when no specific selection is active
-      this.updateMarkersVisibility(this.selectionIds);
-    } catch (error) {
-      console.error("Error showing current context markers:", error);
-    }
-  }
-
-  // Method to handle marker deselection (second click)
   private handleMarkerDeselection(clickedMarkerIndex: number): void {
     try {
       console.log(`Handling deselection for marker ${clickedMarkerIndex}`);
-
-      // When deselecting, show ALL markers from the original data
-      // This ensures all markers become visible again
       this.updateMarkersVisibility(this.selectionIds);
     } catch (error) {
       console.error("Error handling marker deselection:", error);
     }
   }
 
-  // Method to restore selection state after visual recreation
+  private showOnlyCurrentContextMarkers(): void {
+    try {
+      console.log("Showing only markers in current filtered context");
+      this.updateMarkersVisibility(this.selectionIds);
+    } catch (error) {
+      console.error("Error showing current context markers:", error);
+    }
+  }
+
   private restoreSelectionState(): void {
     try {
       if (this.persistentSelection.length > 0) {
@@ -1514,7 +1797,7 @@ export class Visual implements IVisual {
           "Restoring persistent selection state:",
           this.persistentSelection
         );
-        this.currentSelection = [...this.persistentSelection]; // Restore current selection
+        this.currentSelection = [...this.persistentSelection];
         this.updateMarkersVisibility(this.persistentSelection);
       }
     } catch (error) {
@@ -1522,74 +1805,83 @@ export class Visual implements IVisual {
     }
   }
 
-  // Method to perform a delayed empty state check for packaged version
-  private performDelayedEmptyStateCheck(): void {
-    // Use a longer delay for packaged version to ensure all operations are complete
-    setTimeout(() => {
-      try {
-        // Ensure empty state div is properly positioned
-        this.ensureEmptyStateDivPosition();
-
-        const hasAnyData = this.hasAnyDistributionData();
-
-        console.log("Delayed empty state check (packaged version):", {
-          hasAnyData,
-          markersCount: this.markers.length,
-          selectionIdsCount: this.selectionIds.length,
-          currentAdminCodesCount: this.currentAdminCodes.length,
-          naAdminCodesCount: this.naAdminCodes.length,
-          choroplethTooltipDataCount: this.choroplethTooltipData.size,
-          defaultGeoJsonLoaded: this.defaultGeoJsonLoaded,
+  public clearSelection(): void {
+    try {
+      console.log("Clearing all selections");
+      this.selectionManager
+        .clear()
+        .then(() => {
+          this.currentSelection = [];
+          this.persistentSelection = [];
+          this.showOnlyCurrentContextMarkers();
+        })
+        .catch((error) => {
+          console.error("Error clearing selection:", error);
+          this.currentSelection = [];
+          this.persistentSelection = [];
+          this.showOnlyCurrentContextMarkers();
         });
-
-        if (hasAnyData) {
-          this.hideEmptyState();
-        } else {
-          this.showEmptyState();
-        }
-      } catch (error) {
-        console.error("Error in delayed empty state check:", error);
-        // Fallback: show empty state if there's an error
-        this.showEmptyState();
-      }
-    }, 500); // Longer delay for packaged version
+    } catch (error) {
+      console.error("Error in clearSelection:", error);
+    }
   }
 
-  // Method to get disputed border styling
+  public destroy(): void {
+    try {
+      if (this.map) {
+        this.map.remove();
+      }
+      this.markers = [];
+      this.selectionIds = [];
+      this.powerBIChoroplethData = [];
+      this.currentSelection = [];
+      this.persistentSelection = [];
+      console.log("Visual destroyed and cleaned up");
+    } catch (error) {
+      console.error("Error during visual destruction:", error);
+    }
+  }
+
+  public onResize(): void {
+    try {
+      if (this.map) {
+        this.map.invalidateSize();
+      }
+      this.ensureEmptyStateDivPosition();
+      this.performEmptyStateCheck();
+      console.log("Visual resized and updated");
+    } catch (error) {
+      console.error("Error during visual resize:", error);
+    }
+  }
+
   private getDisputedBorderStyle(feature: any) {
     const lineStyle = feature.properties?.line_style || "dashed";
-
     return {
-      color: "#CBCBCB", // Light gray color for disputed borders
+      color: "#CBCBCB",
       weight: 3,
       opacity: 1,
       fillOpacity: 0,
-      dashArray: lineStyle === "dotted" ? "1, 3" : "10, 5", // Dotted vs Dashed
+      dashArray: lineStyle === "dotted" ? "1, 3" : "10, 5",
       lineCap: "round",
       lineJoin: "round",
     };
   }
 
-  // Method to handle disputed border interactions
   private onEachDisputedBorderFeature(feature: any, layer: L.Layer) {
     // No click events for disputed borders - they are visual indicators only
   }
 
-  // Method to load disputed borders
   private loadDisputedBorders() {
     try {
-      // Load the disputed borders GeoJSON
       const bordersData = disputedBorders;
 
-      // Clear existing borders
       if (this.disputedBordersLayer) {
         this.disputedBordersLayer.clearLayers();
       }
 
-      // Add new borders
       this.disputedBordersLayer.addData(bordersData);
 
-      // Add to map if not already added
       if (!this.map.hasLayer(this.disputedBordersLayer)) {
         this.disputedBordersLayer.addTo(this.map);
       }
