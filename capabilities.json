@@ -2,49 +2,20 @@
   "dataRoles": [
     {
       "name": "choroplethGeometry",
-      "kind": "GroupingOrMeasure",
+      "kind": "Grouping",
       "displayName": "Choropleth Geometry",
       "description": "Complete GeoJSON geometry data for choropleth regions"
     },
-    {
-      "name": "choroplethValue",
-      "kind": "Measure",
-      "displayName": "Choropleth Value",
-      "description": "Numeric value for choropleth coloring"
-    },
-    {
-      "name": "adminCode",
-      "kind": "Grouping",
-      "displayName": "Admin Code",
-      "description": "Administrative code for regions"
-    },
-    {
-      "name": "countryName",
-      "kind": "Grouping",
-      "displayName": "Country Name",
-      "description": "Name of the country/region"
-    },
-    {
-      "name": "isoCode",
-      "kind": "Grouping",
-      "displayName": "ISO Code",
-      "description": "ISO 3-letter country code"
-    },
-    {
-      "name": "continent",
-      "kind": "Grouping",
-      "displayName": "Continent",
-      "description": "Continent of the region"
-    },
+
     {
       "name": "latitude",
-      "kind": "Measure",
+      "kind": "Grouping",
       "displayName": "Latitude",
       "description": "Latitude for marker placement"
     },
     {
       "name": "longitude",
-      "kind": "Measure",
+      "kind": "Grouping",
       "displayName": "Longitude",
       "description": "Longitude for marker placement"
     },
@@ -53,6 +24,12 @@
       "kind": "GroupingOrMeasure",
       "displayName": "Tooltip",
       "description": "Additional data for tooltips"
+    },
+    {
+      "name": "choroplethTooltip",
+      "kind": "GroupingOrMeasure",
+      "displayName": "Choropleth Tooltip",
+      "description": "Additional data for choropleth tooltips"
     }
   ],
   "dataViewMappings": [
@@ -63,31 +40,6 @@
             {
               "for": {
                 "in": "choroplethGeometry"
-              }
-            },
-            {
-              "for": {
-                "in": "choroplethValue"
-              }
-            },
-            {
-              "for": {
-                "in": "adminCode"
-              }
-            },
-            {
-              "for": {
-                "in": "countryName"
-              }
-            },
-            {
-              "for": {
-                "in": "isoCode"
-              }
-            },
-            {
-              "for": {
-                "in": "continent"
               }
             },
             {
@@ -103,6 +55,11 @@
             {
               "for": {
                 "in": "tooltip"
+              }
+            },
+            {
+              "for": {
+                "in": "choroplethTooltip"
               }
             }
           ]

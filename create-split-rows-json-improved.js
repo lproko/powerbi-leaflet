@@ -11,24 +11,35 @@ function createImprovedSplitRowsJSON() {
     const maxTextLength = 30000; // Well under Power BI's 32,767 limit
     const splitData = [];
     
-    data.features.forEach((feature, featureIndex) => {
-      const geometryString = JSON.stringify(feature.geometry);
-      
-      if (geometryString.length <= maxTextLength) {
-        // Single row for short geometries
-        splitData.push({
-          rowId: `${featureIndex}_0`,
-          featureIndex: featureIndex,
-          adminCode: feature.adminCode,
-          countryName: feature.countryName,
-          continent: feature.continent,
-          isoCode: feature.isoCode,
-          geometryPart: 1,
-          totalParts: 1,
-          geometryString: geometryString,
-          geometryType: feature.geometry.type
-        });
-      } else {
+         data.features.forEach((feature, featureIndex) => {
+       // Create geometry with embedded properties for the string
+       const geometryWithProperties = {
+         ...feature.geometry,
+         properties: {
+           adminCode: feature.geometry.properties.adminCode,
+           countryName: feature.geometry.properties.countryName,
+           continent: feature.geometry.properties.continent,
+           isoCode: feature.geometry.properties.isoCode
+         }
+       };
+       
+       const geometryString = JSON.stringify(geometryWithProperties);
+       
+       if (geometryString.length <= maxTextLength) {
+         // Single row for short geometries
+         splitData.push({
+           rowId: `${featureIndex}_0`,
+           featureIndex: featureIndex,
+           adminCode: feature.geometry.properties.adminCode,
+           countryName: feature.geometry.properties.countryName,
+           continent: feature.geometry.properties.continent,
+           isoCode: feature.geometry.properties.isoCode,
+           geometryPart: 1,
+           totalParts: 1,
+           geometryString: geometryString,
+           geometryType: feature.geometry.type
+         });
+       } else {
         // For long geometries, we need to split the coordinates array intelligently
         // Instead of splitting the JSON string, we'll split the actual coordinate data
         const geometry = feature.geometry;
@@ -39,44 +50,56 @@ function createImprovedSplitRowsJSON() {
           let currentPart = [];
           let currentLength = 0;
           
-          // Split the MultiPolygon coordinates
-          for (let i = 0; i < coordinates.length; i++) {
-            const polygon = coordinates[i];
-            const polygonString = JSON.stringify(polygon);
-            
-            if (currentLength + polygonString.length > maxTextLength && currentPart.length > 0) {
-              // Current part is getting too long, save it and start a new part
-              const partGeometry = {
-                type: 'MultiPolygon',
-                coordinates: currentPart
-              };
-              parts.push(JSON.stringify(partGeometry));
-              currentPart = [polygon];
-              currentLength = polygonString.length;
-            } else {
-              currentPart.push(polygon);
-              currentLength += polygonString.length;
-            }
-          }
-          
-          // Add the last part
-          if (currentPart.length > 0) {
-            const partGeometry = {
-              type: 'MultiPolygon',
-              coordinates: currentPart
-            };
-            parts.push(JSON.stringify(partGeometry));
-          }
+                     // Split the MultiPolygon coordinates
+           for (let i = 0; i < coordinates.length; i++) {
+             const polygon = coordinates[i];
+             const polygonString = JSON.stringify(polygon);
+             
+             if (currentLength + polygonString.length > maxTextLength && currentPart.length > 0) {
+               // Current part is getting too long, save it and start a new part
+               const partGeometry = {
+                 type: 'MultiPolygon',
+                 coordinates: currentPart,
+                 properties: {
+                   adminCode: feature.geometry.properties.adminCode,
+                   countryName: feature.geometry.properties.countryName,
+                   continent: feature.geometry.properties.continent,
+                   isoCode: feature.geometry.properties.isoCode
+                 }
+               };
+               parts.push(JSON.stringify(partGeometry));
+               currentPart = [polygon];
+               currentLength = polygonString.length;
+             } else {
+               currentPart.push(polygon);
+               currentLength += polygonString.length;
+             }
+           }
+           
+           // Add the last part
+           if (currentPart.length > 0) {
+             const partGeometry = {
+               type: 'MultiPolygon',
+               coordinates: currentPart,
+               properties: {
+                 adminCode: feature.geometry.properties.adminCode,
+                 countryName: feature.geometry.properties.countryName,
+                 continent: feature.geometry.properties.continent,
+                 isoCode: feature.geometry.properties.isoCode
+               }
+             };
+             parts.push(JSON.stringify(partGeometry));
+           }
           
           // Create a row for each part
           parts.forEach((part, partIndex) => {
             splitData.push({
               rowId: `${featureIndex}_${partIndex}`,
               featureIndex: featureIndex,
-              adminCode: feature.adminCode,
-              countryName: feature.countryName,
-              continent: feature.continent,
-              isoCode: feature.isoCode,
+              adminCode: feature.geometry.properties.adminCode,
+              countryName: feature.geometry.properties.countryName,
+              continent: feature.geometry.properties.continent,
+              isoCode: feature.geometry.properties.isoCode,
               geometryPart: partIndex + 1,
               totalParts: parts.length,
               geometryString: part,
@@ -98,7 +121,13 @@ function createImprovedSplitRowsJSON() {
               // Current part is getting too long, save it and start a new part
               const partGeometry = {
                 type: 'Polygon',
-                coordinates: currentPart
+                coordinates: currentPart,
+                properties: {
+                  adminCode: feature.geometry.properties.adminCode,
+                  countryName: feature.geometry.properties.countryName,
+                  continent: feature.geometry.properties.continent,
+                  isoCode: feature.geometry.properties.isoCode
+                }
               };
               parts.push(JSON.stringify(partGeometry));
               currentPart = [ring];
@@ -113,7 +142,13 @@ function createImprovedSplitRowsJSON() {
           if (currentPart.length > 0) {
             const partGeometry = {
               type: 'Polygon',
-              coordinates: currentPart
+              coordinates: currentPart,
+              properties: {
+                adminCode: feature.geometry.properties.adminCode,
+                countryName: feature.geometry.properties.countryName,
+                continent: feature.geometry.properties.continent,
+                isoCode: feature.geometry.properties.isoCode
+              }
             };
             parts.push(JSON.stringify(partGeometry));
           }
@@ -123,10 +158,10 @@ function createImprovedSplitRowsJSON() {
             splitData.push({
               rowId: `${featureIndex}_${partIndex}`,
               featureIndex: featureIndex,
-              adminCode: feature.adminCode,
-              countryName: feature.countryName,
-              continent: feature.continent,
-              isoCode: feature.isoCode,
+              adminCode: feature.geometry.properties.adminCode,
+              countryName: feature.geometry.properties.countryName,
+              continent: feature.geometry.properties.continent,
+              isoCode: feature.geometry.properties.isoCode,
               geometryPart: partIndex + 1,
               totalParts: parts.length,
               geometryString: part,
@@ -138,10 +173,10 @@ function createImprovedSplitRowsJSON() {
           splitData.push({
             rowId: `${featureIndex}_0`,
             featureIndex: featureIndex,
-            adminCode: feature.adminCode,
-            countryName: feature.countryName,
-            continent: feature.continent,
-            isoCode: feature.isoCode,
+            adminCode: feature.geometry.properties.adminCode,
+            countryName: feature.geometry.properties.countryName,
+            continent: feature.geometry.properties.continent,
+            isoCode: feature.geometry.properties.isoCode,
             geometryPart: 1,
             totalParts: 1,
             geometryString: geometryString,
