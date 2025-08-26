@@ -1,39 +1,47 @@
 {
   "dataRoles": [
     {
+      "name": "choroplethGeometry",
+      "kind": "Grouping",
+      "displayName": "Choropleth Geometry",
+      "description": "Complete GeoJSON geometry data for choropleth regions"
+    },
+
+    {
       "name": "latitude",
       "kind": "Grouping",
-      "displayName": "Latitude"
+      "displayName": "Latitude",
+      "description": "Latitude for marker placement"
     },
     {
       "name": "longitude",
       "kind": "Grouping",
-      "displayName": "Longitude"
-    },
-    {
-      "name": "pemoScore",
-      "kind": "Grouping",
-      "displayName": "Color"
+      "displayName": "Longitude",
+      "description": "Longitude for marker placement"
     },
     {
       "name": "tooltip",
-      "kind": "Grouping",
-      "displayName": "Tooltip"
+      "kind": "GroupingOrMeasure",
+      "displayName": "Tooltip",
+      "description": "Additional data for tooltips"
+    },
+    {
+      "name": "choroplethTooltip",
+      "kind": "GroupingOrMeasure",
+      "displayName": "Choropleth Tooltip",
+      "description": "Additional data for choropleth tooltips"
     }
   ],
   "dataViewMappings": [
     {
-      "conditions": [
-        {
-          "Latitude": { "max": 1 },
-          "Longitude": { "max": 1 },
-          "Color": { "max": 1 },
-          "Tooltip": { "max": 3 }
-        }
-      ],
       "table": {
         "rows": {
           "select": [
+            {
+              "for": {
+                "in": "choroplethGeometry"
+              }
+            },
             {
               "for": {
                 "in": "latitude"
@@ -51,7 +59,7 @@
             },
             {
               "for": {
-                "in": "pemoScore"
+                "in": "choroplethTooltip"
               }
             }
           ]
@@ -59,7 +67,46 @@
       }
     }
   ],
-  "objects": {},
+  "objects": {
+    "choroplethSettings": {
+      "displayName": "Choropleth Settings",
+      "properties": {
+        "showChoropleth": {
+          "displayName": "Show Choropleth",
+          "type": {
+            "bool": true
+          }
+        },
+        "colorScheme": {
+          "displayName": "Color Scheme",
+          "type": {
+            "enumeration": [
+              {
+                "value": "YlOrRd",
+                "displayName": "Yellow-Orange-Red"
+              },
+              {
+                "value": "Blues",
+                "displayName": "Blues"
+              },
+              {
+                "value": "Greens",
+                "displayName": "Greens"
+              },
+              {
+                "value": "Reds",
+                "displayName": "Reds"
+              },
+              {
+                "value": "Viridis",
+                "displayName": "Viridis"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
   "privileges": [
     {
       "name": "WebAccess",

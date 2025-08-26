@@ -1,4 +1,5 @@
 const path = require("path");
+const CopyWebpackPlugin = require("copy-webpack-plugin");
 
 module.exports = {
   entry: "./src/visual.ts",
@@ -24,4 +25,14 @@ module.exports = {
   resolve: {
     extensions: [".tsx", ".ts", ".js", ".css"],
   },
+  plugins: [
+    new CopyWebpackPlugin({
+      patterns: [
+        {
+          from: "plh-map.geojson",
+          to: "plh-map.geojson",
+        },
+      ],
+    }),
+  ],
 };
