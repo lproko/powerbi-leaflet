@@ -2,6 +2,9 @@ import "leaflet/dist/leaflet.css";
 import * as L from "leaflet";
 import "leaflet-draw/dist/leaflet.draw.css";
 import "leaflet-draw";
+import "leaflet.markercluster/dist/MarkerCluster.css";
+import "leaflet.markercluster/dist/MarkerCluster.Default.css";
+import "leaflet.markercluster";
 import powerbiVisualsApi from "powerbi-visuals-api";
 import IVisual = powerbiVisualsApi.extensibility.visual.IVisual;
 import VisualConstructorOptions = powerbiVisualsApi.extensibility.visual.VisualConstructorOptions;
@@ -51,6 +54,7 @@ export class Visual implements IVisual {
   private host: powerbiVisualsApi.extensibility.visual.IVisualHost;
   private markers: L.Marker[] = [];
   private selectionIds: ISelectionId[] = [];
+  private markerClusterGroup: L.MarkerClusterGroup;
   private baseMapLayer: L.GeoJSON;
   private choroplethLayer: L.GeoJSON;
   private disputedBordersLayer: L.GeoJSON;
@@ -144,6 +148,8 @@ export class Visual implements IVisual {
       zoomControl: false,
       attributionControl: false,
       worldCopyJump: true,
+      maxZoom: 20,
+      minZoom: 1,
     }).setView([20, 0], 2);
 
     // Add zoom control to top right
@@ -188,6 +194,45 @@ export class Visual implements IVisual {
       style: (feature) => this.getDisputedBorderStyle(feature),
       onEachFeature: (feature, layer) =>
         this.onEachDisputedBorderFeature(feature, layer),
+    });
+
+    // Initialize marker cluster group
+    this.markerClusterGroup = L.markerClusterGroup({
+      chunkedLoading: true,
+      maxClusterRadius: 80,
+      spiderfyOnMaxZoom: true,
+      showCoverageOnHover: true,
+      zoomToBoundsOnClick: true,
+      disableClusteringAtZoom: 18,
+      removeOutsideVisibleBounds: true,
+      animate: true,
+      animateAddingMarkers: true,
+      spiderfyShapePositions: function (count: number, centerPoint: L.Point) {
+        const positions = [];
+        const angleStep = (2 * Math.PI) / count;
+        const angle = ((count % 2) * angleStep) / 2;
+        for (let i = 0; i < count; i++) {
+          const angle2 = angle + i * angleStep;
+          const x = Math.cos(angle2) * 20;
+          const y = Math.sin(angle2) * 20;
+          positions.push(new L.Point(centerPoint.x + x, centerPoint.y + y));
+        }
+        return positions;
+      },
+    });
+
+    // Add cluster event handlers
+    this.markerClusterGroup.on("clusterclick", (e) => {
+      console.log(
+        "Cluster clicked:",
+        e.layer.getAllChildMarkers().length,
+        "markers"
+      );
+      // You can add custom cluster click behavior here
+    });
+
+    this.markerClusterGroup.on("animationend", () => {
+      console.log("Cluster animation completed");
     });
 
     // Hide Leaflet attribution and any flags
@@ -254,6 +299,68 @@ export class Visual implements IVisual {
       
       .leaflet-pane {
         background: transparent !important;
+      }
+      
+      /* Marker cluster styling */
+      .marker-cluster-small {
+        background-color: rgba(34, 41, 77, 0.6);
+        border: 2px solid #22294d;
+      }
+      
+      .marker-cluster-small div {
+        background-color: rgba(34, 41, 77, 0.8);
+        color: white;
+        font-weight: bold;
+        font-size: 11px;
+        border-radius: 50%;
+        width: 30px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      
+      .marker-cluster-medium {
+        background-color: rgba(34, 41, 77, 0.7);
+        border: 2px solid #22294d;
+      }
+      
+      .marker-cluster-medium div {
+        background-color: rgba(34, 41, 77, 0.9);
+        color: white;
+        font-weight: bold;
+        font-size: 12px;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      
+      .marker-cluster-large {
+        background-color: rgba(34, 41, 77, 0.8);
+        border: 2px solid #22294d;
+      }
+      
+      .marker-cluster-large div {
+        background-color: rgba(34, 41, 77, 1);
+        color: white;
+        font-weight: bold;
+        font-size: 13px;
+        border-radius: 50%;
+        width: 50px;
+        height: 50px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      
+      .marker-cluster-small:hover,
+      .marker-cluster-medium:hover,
+      .marker-cluster-large:hover {
+        background-color: rgba(69, 94, 111, 0.8);
+        border-color: #455E6F;
       }
     `;
     document.head.appendChild(style);
@@ -992,9 +1099,12 @@ export class Visual implements IVisual {
 
       // Clear existing markers
       this.markers.forEach((marker) => {
-        this.map.removeLayer(marker);
+        this.markerClusterGroup.removeLayer(marker);
       });
       this.markers = [];
+
+      // Clear the cluster group
+      this.markerClusterGroup.clearLayers();
 
       // Create markers only for rows with valid coordinates
       validCoordinateRows.forEach((row, index) => {
@@ -1062,8 +1172,8 @@ export class Visual implements IVisual {
                   console.warn("No selection IDs available for fallback");
                   // Show all markers without selection
                   this.markers.forEach((marker) => {
-                    if (!this.map.hasLayer(marker)) {
-                      marker.addTo(this.map);
+                    if (!this.markerClusterGroup.hasLayer(marker)) {
+                      this.markerClusterGroup.addLayer(marker);
                     }
                   });
                 }
@@ -1075,12 +1185,17 @@ export class Visual implements IVisual {
           L.DomEvent.stopPropagation(event);
         });
 
-        // Add marker to map
-        marker.addTo(this.map);
+        // Add marker to cluster group instead of map
+        this.markerClusterGroup.addLayer(marker);
         this.markers.push(marker);
 
         console.log(`✅ Created marker ${index + 1} at [${lat}, ${lng}]`);
       });
+
+      // Add cluster group to map if not already added
+      if (!this.map.hasLayer(this.markerClusterGroup)) {
+        this.markerClusterGroup.addTo(this.map);
+      }
 
       console.log(
         `✅ Created ${this.markers.length} markers from ${validCoordinateRows.length} valid coordinate rows`
@@ -1134,7 +1249,7 @@ export class Visual implements IVisual {
     // Create GeoJSON features from Power BI data
     const features = this.powerBIChoroplethData.map((data) => {
       const feature = {
-        type: "Feature",
+        type: "Feature" as const,
         properties: {
           adminCode: data.adminCode,
           choropleth_value: data.choroplethValue,
@@ -1157,7 +1272,7 @@ export class Visual implements IVisual {
     });
 
     const geoJsonData = {
-      type: "FeatureCollection",
+      type: "FeatureCollection" as const,
       features: features,
     };
 
@@ -1188,7 +1303,7 @@ export class Visual implements IVisual {
 
     // Clear markers
     this.markers.forEach((marker) => {
-      this.map.removeLayer(marker);
+      this.markerClusterGroup.removeLayer(marker);
     });
     this.markers = [];
 
@@ -1248,16 +1363,16 @@ export class Visual implements IVisual {
 
       if (shouldBeVisible) {
         // Show marker
-        if (!this.map.hasLayer(marker)) {
-          marker.addTo(this.map);
+        if (!this.markerClusterGroup.hasLayer(marker)) {
+          this.markerClusterGroup.addLayer(marker);
           visibleMarkers++;
         } else {
           visibleMarkers++;
         }
       } else {
         // Hide marker
-        if (this.map.hasLayer(marker)) {
-          this.map.removeLayer(marker);
+        if (this.markerClusterGroup.hasLayer(marker)) {
+          this.markerClusterGroup.removeLayer(marker);
           hiddenMarkers++;
         }
       }
@@ -1504,7 +1619,7 @@ export class Visual implements IVisual {
     try {
       const totalMarkers = this.markers.length;
       const visibleMarkers = this.markers.filter((marker) =>
-        this.map.hasLayer(marker)
+        this.markerClusterGroup.hasLayer(marker)
       ).length;
       const hasOriginalData = this.selectionIds.length > 0;
       const hasChoroplethData = this.powerBIChoroplethData.length > 0;
@@ -1552,7 +1667,10 @@ export class Visual implements IVisual {
   private getCurrentDataContext(): ISelectionId[] {
     try {
       return this.selectionIds.filter((id, index) => {
-        return this.markers[index] && this.map.hasLayer(this.markers[index]);
+        return (
+          this.markers[index] &&
+          this.markerClusterGroup.hasLayer(this.markers[index])
+        );
       });
     } catch (error) {
       console.error("Error getting current data context:", error);
@@ -1571,8 +1689,8 @@ export class Visual implements IVisual {
         console.warn("No selection IDs available for deselection handling");
         // Show all markers without selection
         this.markers.forEach((marker) => {
-          if (!this.map.hasLayer(marker)) {
-            marker.addTo(this.map);
+          if (!this.markerClusterGroup.hasLayer(marker)) {
+            this.markerClusterGroup.addLayer(marker);
           }
         });
       }
@@ -1580,8 +1698,8 @@ export class Visual implements IVisual {
       console.error("Error handling marker deselection:", error);
       // Fallback: show all markers
       this.markers.forEach((marker) => {
-        if (!this.map.hasLayer(marker)) {
-          marker.addTo(this.map);
+        if (!this.markerClusterGroup.hasLayer(marker)) {
+          this.markerClusterGroup.addLayer(marker);
         }
       });
     }
@@ -1669,8 +1787,8 @@ export class Visual implements IVisual {
       opacity: 1,
       fillOpacity: 0,
       dashArray: lineStyle === "dotted" ? "1, 3" : "10, 5",
-      lineCap: "round",
-      lineJoin: "round",
+      lineCap: "round" as const,
+      lineJoin: "round" as const,
     };
   }
 
@@ -1686,7 +1804,7 @@ export class Visual implements IVisual {
         this.disputedBordersLayer.clearLayers();
       }
 
-      this.disputedBordersLayer.addData(bordersData);
+      this.disputedBordersLayer.addData(bordersData as any);
 
       if (!this.map.hasLayer(this.disputedBordersLayer)) {
         this.disputedBordersLayer.addTo(this.map);
