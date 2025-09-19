@@ -3,6 +3,7 @@ const CopyWebpackPlugin = require("copy-webpack-plugin");
 
 module.exports = {
   entry: "./src/visual.ts",
+  devtool: 'false', // Use eval mode to avoid CSP issues while keeping some debugging capability
   output: {
     path: path.resolve(__dirname, "dist"),
     filename: "visual.js",

@@ -105,6 +105,18 @@
           }
         }
       }
+    },
+    "mapSettings": {
+      "displayName": "Map Settings",
+      "properties": {
+        "baseMapUrl": {
+          "displayName": "Base Map GeoJSON URL",
+          "description": "Public URL to load base map GeoJSON data from",
+          "type": {
+            "text": true
+          }
+        }
+      }
     }
   },
   "privileges": [

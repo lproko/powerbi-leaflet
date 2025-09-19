@@ -36,48 +36,72 @@ import FormattingSettingsModel = formattingSettings.Model;
  * Data Point Formatting Card
  */
 class DataPointCardSettings extends FormattingSettingsCard {
-    defaultColor = new formattingSettings.ColorPicker({
-        name: "defaultColor",
-        displayName: "Default color",
-        value: { value: "" }
-    });
+  defaultColor = new formattingSettings.ColorPicker({
+    name: "defaultColor",
+    displayName: "Default color",
+    value: { value: "" },
+  });
 
-    showAllDataPoints = new formattingSettings.ToggleSwitch({
-        name: "showAllDataPoints",
-        displayName: "Show all",
-        value: true
-    });
+  showAllDataPoints = new formattingSettings.ToggleSwitch({
+    name: "showAllDataPoints",
+    displayName: "Show all",
+    value: true,
+  });
 
-    fill = new formattingSettings.ColorPicker({
-        name: "fill",
-        displayName: "Fill",
-        value: { value: "" }
-    });
+  fill = new formattingSettings.ColorPicker({
+    name: "fill",
+    displayName: "Fill",
+    value: { value: "" },
+  });
 
-    fillRule = new formattingSettings.ColorPicker({
-        name: "fillRule",
-        displayName: "Color saturation",
-        value: { value: "" }
-    });
+  fillRule = new formattingSettings.ColorPicker({
+    name: "fillRule",
+    displayName: "Color saturation",
+    value: { value: "" },
+  });
 
-    fontSize = new formattingSettings.NumUpDown({
-        name: "fontSize",
-        displayName: "Text Size",
-        value: 12
-    });
+  fontSize = new formattingSettings.NumUpDown({
+    name: "fontSize",
+    displayName: "Text Size",
+    value: 12,
+  });
 
-    name: string = "dataPoint";
-    displayName: string = "Data colors";
-    slices: Array<FormattingSettingsSlice> = [this.defaultColor, this.showAllDataPoints, this.fill, this.fillRule, this.fontSize];
+  name: string = "dataPoint";
+  displayName: string = "Data colors";
+  slices: Array<FormattingSettingsSlice> = [
+    this.defaultColor,
+    this.showAllDataPoints,
+    this.fill,
+    this.fillRule,
+    this.fontSize,
+  ];
 }
 
 /**
-* visual settings model class
-*
-*/
-export class VisualFormattingSettingsModel extends FormattingSettingsModel {
-    // Create formatting settings model formatting cards
-    dataPointCard = new DataPointCardSettings();
+ * Map Settings Card
+ */
+class MapSettingsCard extends FormattingSettingsCard {
+  baseMapUrl = new formattingSettings.TextInput({
+    name: "baseMapUrl",
+    displayName: "Base Map GeoJSON URL",
+    description: "Public URL to load base map GeoJSON data from",
+    value: "",
+    placeholder: "https://example.com/map.geojson",
+  });
 
-    cards = [this.dataPointCard];
+  name: string = "mapSettings";
+  displayName: string = "Map Settings";
+  slices: Array<FormattingSettingsSlice> = [this.baseMapUrl];
+}
+
+/**
+ * visual settings model class
+ *
+ */
+export class VisualFormattingSettingsModel extends FormattingSettingsModel {
+  // Create formatting settings model formatting cards
+  dataPointCard = new DataPointCardSettings();
+  mapSettingsCard = new MapSettingsCard();
+
+  cards = [this.dataPointCard, this.mapSettingsCard];
 }

@@ -15,6 +15,7 @@ import ISelectionId = powerbiVisualsApi.visuals.ISelectionId;
 import markerIcon from "leaflet/dist/images/marker-icon.png";
 import { disputedBorders } from "./disputed-borders";
 import customGeoJSON from "./custom.geo.json";
+import { VisualFormattingSettingsModel } from "./settings";
 
 interface ChoroplethFeature {
   type: string;
@@ -69,11 +70,15 @@ export class Visual implements IVisual {
   private persistentSelection: ISelectionId[] = [];
   private powerBIChoroplethData: PowerBIChoroplethData[] = [];
   private currentDataView: DataView;
+  private settings: VisualFormattingSettingsModel;
 
   constructor(options: VisualConstructorOptions) {
     this.target = options.element;
     this.host = options.host;
     this.selectionManager = this.host.createSelectionManager();
+
+    // Initialize settings
+    this.settings = new VisualFormattingSettingsModel();
 
     // Initialize choropleth settings
     this.choroplethSettings = {
@@ -170,7 +175,6 @@ export class Visual implements IVisual {
         event.originalEvent &&
         event.originalEvent.target === this.map.getContainer()
       ) {
-        console.log("Map clicked - clearing selections");
         this.showOnlyCurrentContextMarkers();
       }
     });
@@ -199,7 +203,7 @@ export class Visual implements IVisual {
     // Initialize marker cluster group
     this.markerClusterGroup = L.markerClusterGroup({
       chunkedLoading: true,
-      maxClusterRadius: 80,
+      maxClusterRadius: 40,
       spiderfyOnMaxZoom: true,
       showCoverageOnHover: true,
       zoomToBoundsOnClick: true,
@@ -223,16 +227,11 @@ export class Visual implements IVisual {
 
     // Add cluster event handlers
     this.markerClusterGroup.on("clusterclick", (e) => {
-      console.log(
-        "Cluster clicked:",
-        e.layer.getAllChildMarkers().length,
-        "markers"
-      );
       // You can add custom cluster click behavior here
     });
 
     this.markerClusterGroup.on("animationend", () => {
-      console.log("Cluster animation completed");
+      // Cluster animation completed
     });
 
     // Hide Leaflet attribution and any flags
@@ -303,12 +302,12 @@ export class Visual implements IVisual {
       
       /* Marker cluster styling */
       .marker-cluster-small {
-        background-color: rgba(34, 41, 77, 0.6);
-        border: 2px solid #22294d;
+        background-color: rgba(249, 177, 18, 0.6);
+        border: 2px solid #F9B112;
       }
       
       .marker-cluster-small div {
-        background-color: rgba(34, 41, 77, 0.8);
+        background-color: #F9B112;
         color: white;
         font-weight: bold;
         font-size: 11px;
@@ -321,12 +320,12 @@ export class Visual implements IVisual {
       }
       
       .marker-cluster-medium {
-        background-color: rgba(34, 41, 77, 0.7);
-        border: 2px solid #22294d;
+        background-color: rgba(249, 177, 18, 0.7);
+        border: 2px solid #F9B112;
       }
       
       .marker-cluster-medium div {
-        background-color: rgba(34, 41, 77, 0.9);
+        background-color: #F9B112;
         color: white;
         font-weight: bold;
         font-size: 12px;
@@ -339,12 +338,12 @@ export class Visual implements IVisual {
       }
       
       .marker-cluster-large {
-        background-color: rgba(34, 41, 77, 0.8);
+        background-color: rgba(249, 177, 18, 0.8);
         border: 2px solid #22294d;
       }
       
       .marker-cluster-large div {
-        background-color: rgba(34, 41, 77, 1);
+        background-color: #F9B112;
         color: white;
         font-weight: bold;
         font-size: 13px;
@@ -359,14 +358,13 @@ export class Visual implements IVisual {
       .marker-cluster-small:hover,
       .marker-cluster-medium:hover,
       .marker-cluster-large:hover {
-        background-color: rgba(69, 94, 111, 0.8);
+        background-color: rgba(249, 177, 18, 0.8);
         border-color: #455E6F;
       }
     `;
     document.head.appendChild(style);
 
-    // Load base map and disputed borders
-    this.loadBaseMap();
+    // Load disputed borders (base map will be loaded when settings are available)
     this.loadDisputedBorders();
 
     // Setup custom zoom controls
@@ -467,7 +465,6 @@ export class Visual implements IVisual {
   // Performance monitoring helper
   private logPerformance(operation: string, startTime: number) {
     const duration = performance.now() - startTime;
-    console.log(`⚡ ${operation} completed in ${duration.toFixed(2)}ms`);
     return duration;
   }
 
@@ -475,7 +472,6 @@ export class Visual implements IVisual {
   private resetToDefaultView() {
     if (this.map) {
       this.map.setView([20, 0], 2);
-      console.log("🗺️ Map reset to default view: zoom level 2");
     }
   }
 
@@ -520,33 +516,159 @@ export class Visual implements IVisual {
 
       // Don't fit bounds - keep our desired zoom level 2
       // This prevents the jarring zoom-in-then-zoom-out effect
-      console.log("🗺️ Keeping map at zoom level 2 - no bounds fitting");
 
       this.logPerformance("Map data loading", startTime);
-      console.log(`✅ Map loaded: ${geoData.features?.length || 0} features`);
     } catch (error) {
-      console.error("❌ Map loading error:", error);
       this.map.setView([20, 0], 2);
     }
   }
 
   private loadBaseMap() {
-    console.log("🗺️ Loading map data from custom.geo.json...");
-    this.loadMapData();
+    // Check if user provided a custom base map URL
+    const baseMapUrl = this.settings?.mapSettingsCard?.baseMapUrl?.value;
+
+    if (baseMapUrl && baseMapUrl.trim() !== "") {
+      console.log("Loading map from URL:", baseMapUrl);
+      this.hideBaseMapMessage();
+      this.loadMapDataFromUrl(baseMapUrl);
+    } else {
+      console.log("No URL provided - showing message");
+      this.showBaseMapMessage();
+    }
+  }
+
+  private async loadMapDataFromUrl(url: string) {
+    try {
+      console.log("Attempting to fetch URL:", url);
+      const response = await fetch(url);
+      console.log("Response status:", response.status);
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const geoData = await response.json();
+      console.log("GeoJSON data received:", geoData);
+
+      // Validate GeoJSON structure
+      if (!geoData.type || !geoData.features) {
+        throw new Error("Invalid GeoJSON format - missing type or features");
+      }
+
+      // Add to base map layer
+      this.baseMapLayer.addData(geoData);
+      this.map.addLayer(this.baseMapLayer);
+
+      // Process for choropleth
+      this.processCustomGeoJSONToChoropleth(geoData);
+
+      console.log("Map loaded successfully from URL");
+    } catch (error) {
+      console.error("Error loading base map from URL:", error);
+      this.showUrlErrorMessage(url, error.message);
+    }
+  }
+
+  private updateSettingsFromPowerBI(options: VisualUpdateOptions) {
+    // Access settings from the dataView metadata
+    const dataView = options.dataViews[0];
+    if (dataView && dataView.metadata && dataView.metadata.objects) {
+      const mapSettings = dataView.metadata.objects.mapSettings;
+      if (mapSettings && mapSettings.baseMapUrl) {
+        this.settings.mapSettingsCard.baseMapUrl.value = String(
+          mapSettings.baseMapUrl
+        );
+        console.log(
+          "Updated baseMapUrl from Power BI:",
+          mapSettings.baseMapUrl
+        );
+      }
+    }
+  }
+
+  private showBaseMapMessage() {
+    // Clear any existing base map
+    this.baseMapLayer.clearLayers();
+
+    // Show message in the empty state div
+    if (this.emptyStateDiv) {
+      this.emptyStateDiv.innerHTML = `
+        <div style="text-align: center; padding: 20px;">
+          <div style="font-size: 14px; font-weight: bold; margin-bottom: 10px; color: #22294B;">
+            Base Map Required
+          </div>
+          <div style="font-size: 12px; color: #666; line-height: 1.4;">
+            Please provide a Base Map GeoJSON URL in the Map Settings to load your custom map.
+          </div>
+        </div>
+      `;
+      this.showEmptyState();
+    }
+  }
+
+  private hideBaseMapMessage() {
+    this.hideEmptyState();
+  }
+
+  private showUrlErrorMessage(url: string, errorMessage: string) {
+    // Clear any existing base map
+    this.baseMapLayer.clearLayers();
+
+    // Show error message in the empty state div
+    if (this.emptyStateDiv) {
+      this.emptyStateDiv.innerHTML = `
+        <div style="text-align: center; padding: 20px;">
+          <div style="font-size: 14px; font-weight: bold; margin-bottom: 10px; color: #d32f2f;">
+            Error Loading Map
+          </div>
+          <div style="font-size: 12px; color: #666; line-height: 1.4; margin-bottom: 10px;">
+            Failed to load GeoJSON from URL:
+          </div>
+          <div style="font-size: 10px; color: #999; word-break: break-all; margin-bottom: 10px;">
+            ${url}
+          </div>
+          <div style="font-size: 11px; color: #d32f2f; font-weight: bold;">
+            ${errorMessage}
+          </div>
+          <div style="font-size: 11px; color: #666; margin-top: 10px;">
+            Please check the URL and try again.
+          </div>
+        </div>
+      `;
+      this.showEmptyState();
+    }
+  }
+
+  private handleBaseMapUrlChange() {
+    const currentUrl = this.settings?.mapSettingsCard?.baseMapUrl?.value;
+
+    // Store the current URL to detect changes
+    if (!(this as any).lastBaseMapUrl) {
+      (this as any).lastBaseMapUrl = currentUrl;
+      // Load base map on first run
+      this.loadBaseMap();
+      return;
+    }
+
+    // If URL has changed, reload the base map
+    if ((this as any).lastBaseMapUrl !== currentUrl) {
+      (this as any).lastBaseMapUrl = currentUrl;
+
+      // Clear existing base map layer
+      this.baseMapLayer.clearLayers();
+
+      // Reload base map with new URL
+      this.loadBaseMap();
+    }
   }
 
   private processCustomGeoJSONToChoropleth(geoData: any) {
     const processingStartTime = performance.now();
 
     if (!geoData.features || !Array.isArray(geoData.features)) {
-      console.warn("No features found in custom.geo.json");
       this.powerBIChoroplethData = [];
       return;
     }
-
-    console.log(
-      `🔄 Processing ${geoData.features.length} features for choropleth...`
-    );
 
     // Pre-allocate array for better performance
     this.powerBIChoroplethData = new Array(geoData.features.length);
@@ -599,13 +721,10 @@ export class Visual implements IVisual {
 
           // Log first few features for debugging
           if (index < 3) {
-            console.log(
-              `✅ Processed feature ${index}: ${choroplethData.countryName}`
-            );
+            // Processed feature
           }
         }
       } catch (error) {
-        console.error(`Error processing feature ${index}:`, error);
         // Keep the array slot empty for this index
       }
     }
@@ -613,23 +732,6 @@ export class Visual implements IVisual {
     // Remove any undefined entries and log results
     this.powerBIChoroplethData = this.powerBIChoroplethData.filter(Boolean);
     this.logPerformance("Choropleth processing", processingStartTime);
-    console.log(
-      `✅ Choropleth processing complete: ${this.powerBIChoroplethData.length} features processed`
-    );
-
-    // Additional debugging to see what was actually created
-    if (this.powerBIChoroplethData.length > 0) {
-      console.log("🔍 First few choropleth features created:");
-      this.powerBIChoroplethData.slice(0, 3).forEach((feature, index) => {
-        console.log(
-          `  ${index}: ${feature.countryName} - AdminCode: ${feature.adminCode} - Geometry type: ${feature.geometry?.type}`
-        );
-      });
-    } else {
-      console.log(
-        "❌ No choropleth features were created - this is the problem!"
-      );
-    }
   }
 
   private getChoroplethStyle(feature: any) {
@@ -639,9 +741,6 @@ export class Visual implements IVisual {
     // Check if this is a Power BI feature (has choropleth_value) or base map feature
     if (choroplethValue !== null && choroplethValue !== undefined) {
       // This is a Power BI feature - make it #455E6F
-      console.log(
-        `🎨 Applying #455E6F color to Power BI feature with adminCode: ${adminCode}`
-      );
       return {
         fillColor: "#455E6F", // #455E6F color for Power BI features
         weight: 1,
@@ -651,9 +750,6 @@ export class Visual implements IVisual {
       };
     } else {
       // This is a base map feature - keep neutral color
-      console.log(
-        `🎨 Applying neutral color to base map feature with adminCode: ${adminCode}`
-      );
       return {
         fillColor: "#F2F2F2", // Light gray for base map
         weight: 0.5,
@@ -711,25 +807,25 @@ export class Visual implements IVisual {
             layer.getElement().style.cursor = "";
           },
         });
-        console.log(
-          `✅ Added click and hover functionality to Power BI choropleth: ${name}`
-        );
       } else {
         // This is a base map feature - no click functionality
-        console.log(`ℹ️ Base map choropleth (no click): ${name}`);
       }
     }
   }
 
   public update(options: VisualUpdateOptions) {
-    console.log("🔄 Visual update started");
     const startTime = performance.now();
 
     if (!options || !options.dataViews || options.dataViews.length === 0) {
-      console.log("⚠️  No data views provided, clearing visual");
       this.clearAllData();
       return;
     }
+
+    // Update settings from Power BI
+    this.updateSettingsFromPowerBI(options);
+
+    // Check if base map URL has changed and reload if necessary
+    this.handleBaseMapUrlChange();
 
     // Store the current data view for marker visibility checks
     this.currentDataView = options.dataViews[0];
@@ -750,60 +846,50 @@ export class Visual implements IVisual {
       }
 
       // Log helpful information about data import
-      console.log("🌍 Power BI Leaflet Visual - Data Import Guide:");
-      console.log(
-        "   • For best results with complex geometries, use JSON import instead of CSV/Excel"
-      );
-      console.log("   • Power BI has a 32,766 character limit for text fields");
-      console.log("   • Choropleth data loaded from Power BI geometryString");
-      console.log(
-        "   • Simple display: Power BI geometry strings shown in red"
-      );
+      // Power BI Leaflet Visual - Data Import Guide:
+      //   • For best results with complex geometries, use JSON import instead of CSV/Excel
+      //   • Power BI has a 32,766 character limit for text fields
+      //   • Choropleth data loaded from Power BI geometryString
+      //   • Simple display: Power BI geometry strings shown in red
 
       // Add comprehensive debugging for the update method
-      console.log("🔍 UPDATE METHOD - Data structure received:", {
-        hasDataView: !!dataView,
-        hasTable: !!dataView.table,
-        hasColumns: !!dataView.table.columns,
-        hasRows: !!dataView.table.rows,
-        totalRows: dataView.table.rows?.length || 0,
-        totalColumns: dataView.table.columns?.length || 0,
-        columnNames:
-          dataView.table.columns?.map((col) => col.displayName) || [],
-        columnRoles:
-          dataView.table.columns?.map((col) => ({
-            name: col.displayName,
-            roles: col.roles,
-          })) || [],
-      });
+      // UPDATE METHOD - Data structure received:
+      //   hasDataView: !!dataView,
+      //   hasTable: !!dataView.table,
+      //   hasColumns: !!dataView.table.columns,
+      //   hasRows: !!dataView.table.rows,
+      //   totalRows: dataView.table.rows?.length || 0,
+      //   totalColumns: dataView.table.columns?.length || 0,
+      //   columnNames: dataView.table.columns?.map((col) => col.displayName) || [],
+      //   columnRoles: dataView.table.columns?.map((col) => ({
+      //     name: col.displayName,
+      //     roles: col.roles,
+      //   })) || [],
 
       // Check if Power BI is filtering the data
       if (dataView.table.rows && dataView.table.rows.length > 0) {
-        console.log("🔍 Data sample check - First row:", {
-          rowData: dataView.table.rows[0],
-          rowKeys: Object.keys(dataView.table.rows[0] || {}),
-          rowValues: Object.values(dataView.table.rows[0] || {}),
-          rowLength: Object.keys(dataView.table.rows[0] || {}).length,
-        });
+        // Data sample check - First row:
+        //   rowData: dataView.table.rows[0],
+        //   rowKeys: Object.keys(dataView.table.rows[0] || {}),
+        //   rowValues: Object.values(dataView.table.rows[0] || {}),
+        //   rowLength: Object.keys(dataView.table.rows[0] || {}).length,
 
         if (dataView.table.rows.length > 1) {
-          console.log("🔍 Data sample check - Second row:", {
-            rowData: dataView.table.rows[1],
-            rowKeys: Object.keys(dataView.table.rows[1] || {}),
-            rowValues: Object.values(dataView.table.rows[1] || {}),
-            rowLength: Object.keys(dataView.table.rows[1] || {}).length,
-          });
+          // Data sample check - Second row:
+          //   rowData: dataView.table.rows[1],
+          //   rowKeys: Object.keys(dataView.table.rows[1] || {}),
+          //   rowValues: Object.values(dataView.table.rows[1] || {}),
+          //   rowLength: Object.keys(dataView.table.rows[1] || {}).length,
         }
       }
 
       // Check for categorical data (markers)
-      console.log("🔍 Categorical data check:", {
-        hasCategorical: !!dataView.categorical,
-        hasSingle: !!dataView.single,
-        hasTable: !!dataView.table,
-        tableRowCount: dataView.table?.rows?.length || 0,
-        tableColumnCount: dataView.table?.columns?.length || 0,
-      });
+      // Categorical data check:
+      //   hasCategorical: !!dataView.categorical,
+      //   hasSingle: !!dataView.single,
+      //   hasTable: !!dataView.table,
+      //   tableRowCount: dataView.table?.rows?.length || 0,
+      //   tableColumnCount: dataView.table?.columns?.length || 0,
 
       // Process data based on what's available
       if (
@@ -823,13 +909,8 @@ export class Visual implements IVisual {
         // Process choropleth data from Power BI (geometryString with embedded properties)
         this.processChoroplethDataFromPowerBI(dataView);
 
-        console.log("✅ Data processing complete:", {
-          choroplethFeaturesCreated: this.powerBIChoroplethData.length,
-          markersCreated: this.markers.length,
-          adminCodeMatchingEnabled: false,
-        });
+        // Data processing complete
       } else {
-        console.log("⚠️ No table data available");
         this.clearAllData();
         this.showEmptyState();
         return;
@@ -845,31 +926,20 @@ export class Visual implements IVisual {
       this.performEmptyStateCheck();
 
       const updateDuration = performance.now() - startTime;
-      console.log(
-        `✅ Visual update completed in ${updateDuration.toFixed(
-          2
-        )}ms - Power BI relationship filtering active`
-      );
     } catch (error) {
-      console.error("❌ Error during visual update:", error);
+      // Error during visual update
     }
   }
 
   private processChoroplethDataFromPowerBI(dataView: DataView) {
-    console.log("🔍 Processing choropleth data from Power BI...");
     this.powerBIChoroplethData = [];
 
     if (!dataView.table || !dataView.table.columns || !dataView.table.rows) {
-      console.log("❌ No table data available for choropleth processing");
       return;
     }
 
     const columns = dataView.table.columns;
     const values = dataView.table.rows;
-
-    console.log(
-      `🔍 Processing ${values.length} rows with ${columns.length} columns`
-    );
 
     // Find column index for choropleth geometry
     const geometryColIndex = columns.findIndex(
@@ -879,30 +949,19 @@ export class Visual implements IVisual {
         col.displayName === "data.geometryString"
     );
 
-    // Find all tooltip column indices (same as marker tooltip)
-    const tooltipColIndices = columns
-      .map((col, index) => (col.roles?.tooltip ? index : -1))
+    // Find all choropleth tooltip column indices (separate from marker tooltip)
+    const choroplethTooltipColIndices = columns
+      .map((col, index) => (col.roles?.choroplethTooltip ? index : -1))
       .filter((index) => index !== -1);
 
     if (geometryColIndex === -1) {
-      console.log("❌ No choropleth geometry column found");
       return;
     }
 
-    console.log(
-      `✅ Found choropleth geometry column at index ${geometryColIndex}`
-    );
-
-    if (tooltipColIndices.length > 0) {
-      console.log(
-        `✅ Found ${
-          tooltipColIndices.length
-        } tooltip columns: ${tooltipColIndices
-          .map((i) => columns[i].displayName)
-          .join(", ")}`
-      );
+    if (choroplethTooltipColIndices.length > 0) {
+      // Found choropleth tooltip columns
     } else {
-      console.log("⚠️ No tooltip columns found");
+      // No choropleth tooltip columns found
     }
 
     // Process each row - simple approach
@@ -918,27 +977,20 @@ export class Visual implements IVisual {
           return; // Skip empty rows
         }
 
-        console.log(
-          `🔍 Processing row ${rowIndex}: geometry length ${geometryString.length}`
-        );
-
         // Parse the geometry string
         let geometryData;
         try {
           geometryData = JSON.parse(geometryString);
         } catch (parseError) {
-          console.log(
-            `⚠️ Row ${rowIndex}: Could not parse geometry string: ${parseError.message}`
-          );
           return;
         }
 
         if (geometryData && geometryData.type) {
-          // Create choropleth tooltip data map with all tooltip fields (same as marker tooltip)
-          const tooltipDataMap = new Map<string, any>();
+          // Create choropleth tooltip data map with choropleth tooltip fields only
+          const choroplethTooltipDataMap = new Map<string, any>();
 
-          // Add all tooltip fields from Power BI
-          tooltipColIndices.forEach((colIndex) => {
+          // Add all choropleth tooltip fields from Power BI
+          choroplethTooltipColIndices.forEach((colIndex) => {
             const value = row[colIndex];
             const columnName = columns[colIndex].displayName;
 
@@ -948,10 +1000,7 @@ export class Visual implements IVisual {
               value !== "" &&
               value !== "NA"
             ) {
-              tooltipDataMap.set(columnName, value);
-              console.log(
-                `✅ Added tooltip field for row ${rowIndex}: ${columnName} = ${value}`
-              );
+              choroplethTooltipDataMap.set(columnName, value);
             }
           });
 
@@ -963,22 +1012,15 @@ export class Visual implements IVisual {
             isoCode: "",
             continent: "",
             tooltipData: new Map(),
-            choroplethTooltipData: tooltipDataMap, // Populate with all tooltip fields
+            choroplethTooltipData: choroplethTooltipDataMap, // Populate with choropleth tooltip fields only
           };
 
           this.powerBIChoroplethData.push(choroplethData);
-          console.log(
-            `✅ Created choropleth feature ${rowIndex} with type: ${geometryData.type} and ${tooltipDataMap.size} tooltip fields`
-          );
         }
       } catch (error) {
-        console.error(`Error processing row ${rowIndex}:`, error);
+        // Error processing row
       }
     });
-
-    console.log(
-      `✅ Created ${this.powerBIChoroplethData.length} choropleth features from Power BI data`
-    );
   }
 
   private processMarkerData(dataView: DataView) {
@@ -998,10 +1040,6 @@ export class Visual implements IVisual {
     let fallbackLngColIndex = -1;
 
     if (latColIndex === -1 || lngColIndex === -1) {
-      console.log(
-        "⚠️  Latitude/Longitude roles not found, attempting fallback detection by column names..."
-      );
-
       fallbackLatColIndex = columns.findIndex(
         (col) =>
           col.displayName.toLowerCase().includes("lat") ||
@@ -1019,19 +1057,6 @@ export class Visual implements IVisual {
           col.displayName === "Longitude" ||
           col.displayName === "longitude"
       );
-
-      console.log("🔍 Fallback column detection:", {
-        fallbackLatColIndex: fallbackLatColIndex,
-        fallbackLngColIndex: fallbackLngColIndex,
-        fallbackLatName:
-          fallbackLatColIndex >= 0
-            ? columns[fallbackLatColIndex].displayName
-            : "NOT FOUND",
-        fallbackLngName:
-          fallbackLngColIndex >= 0
-            ? columns[fallbackLngColIndex].displayName
-            : "NOT FOUND",
-      });
     }
 
     // Use fallback indices if primary roles are not found
@@ -1041,31 +1066,15 @@ export class Visual implements IVisual {
       lngColIndex >= 0 ? lngColIndex : fallbackLngColIndex;
 
     // Debug: Show all columns and their roles
-    console.log("🔍 All available columns for marker debugging:");
-    columns.forEach((col, index) => {
-      console.log(
-        `  ${index}: "${col.displayName}" - roles: ${JSON.stringify(col.roles)}`
-      );
-    });
+    // All available columns for marker debugging
 
     if (finalLatColIndex >= 0 && finalLngColIndex >= 0) {
-      console.log("✅ Found latitude/longitude columns for markers");
-      console.log(
-        `🔍 Latitude column index: ${finalLatColIndex}, name: ${columns[finalLatColIndex]?.displayName}`
-      );
-      console.log(
-        `🔍 Longitude column index: ${finalLngColIndex}, name: ${columns[finalLngColIndex]?.displayName}`
-      );
+      // Found latitude/longitude columns for markers
+      // Latitude column index: finalLatColIndex, name: columns[finalLatColIndex]?.displayName
+      // Longitude column index: finalLngColIndex, name: columns[finalLngColIndex]?.displayName
 
       // Debug: Show actual values in the first few rows
-      console.log("🔍 First 3 rows of lat/lng data:");
-      for (let i = 0; i < Math.min(3, values.length); i++) {
-        const lat = values[i][finalLatColIndex];
-        const lng = values[i][finalLngColIndex];
-        console.log(
-          `  Row ${i}: lat=${lat} (${typeof lat}), lng=${lng} (${typeof lng})`
-        );
-      }
+      // First 3 rows of lat/lng data
 
       // Check if we have valid coordinate data
       const validCoordinateRows = values.filter((row) => {
@@ -1074,26 +1083,18 @@ export class Visual implements IVisual {
         return !isNaN(lat) && !isNaN(lng) && lat !== 0 && lng !== 0;
       });
 
-      console.log(
-        `🔍 Found ${validCoordinateRows.length} rows with valid coordinates out of ${values.length} total rows`
-      );
+      // Found validCoordinateRows.length rows with valid coordinates out of values.length total rows
 
       // Debug: Show what the data structure should look like
-      console.log("🔍 EXPECTED DATA STRUCTURE for markers + choropleth:");
-      console.log("  • Each row should have: lat, lng, geometryString");
-      console.log("  • lat/lng should be numbers (e.g., 40.7128, -74.0060)");
-      console.log("  • geometryString should contain valid GeoJSON");
-      console.log(
-        "  • Current issue: lat/lng are 'NA' strings instead of numbers"
-      );
+      // EXPECTED DATA STRUCTURE for markers + choropleth:
+      //   • Each row should have: lat, lng, geometryString
+      //   • lat/lng should be numbers (e.g., 40.7128, -74.0060)
+      //   • geometryString should contain valid GeoJSON
+      //   • Current issue: lat/lng are 'NA' strings instead of numbers
 
       if (validCoordinateRows.length === 0) {
-        console.log(
-          "⚠️ No valid coordinate data found - skipping marker creation"
-        );
-        console.log(
-          "💡 SOLUTION: Ensure your data source has actual coordinate values, not 'NA'"
-        );
+        // No valid coordinate data found - skipping marker creation
+        // SOLUTION: Ensure your data source has actual coordinate values, not 'NA'
         return;
       }
 
@@ -1111,15 +1112,15 @@ export class Visual implements IVisual {
         const lat = parseFloat(String(row[finalLatColIndex]));
         const lng = parseFloat(String(row[finalLngColIndex]));
 
-        // Create custom marker with original blue styling
+        // Create custom marker with orange styling
         const customMarkerIcon = L.divIcon({
           className: "custom-marker",
           html: `
-            <svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">
-              <path d="M12.5 0C5.596 0 0 5.596 0 12.5c0 9.375 12.5 28.5 12.5 28.5s12.5-19.125 12.5-28.5C25 5.596 19.404 0 12.5 0z" fill="#22294d"/>
-              <circle cx="12.5" cy="12.5" r="6" fill="white"/>
-            </svg>
-          `,
+              <svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12.5 0C5.596 0 0 5.596 0 12.5c0 9.375 12.5 28.5 12.5 28.5s12.5-19.125 12.5-28.5C25 5.596 19.404 0 12.5 0z" fill="#F9B112"/>
+                <circle cx="12.5" cy="12.5" r="6" fill="white"/>
+              </svg>
+            `,
           iconSize: [25, 41],
           iconAnchor: [12, 41],
           popupAnchor: [1, -34],
@@ -1139,8 +1140,6 @@ export class Visual implements IVisual {
 
         // Add click handler for selection
         marker.on("click", (event) => {
-          console.log(`Marker clicked: index ${index}`);
-
           // Build tooltip content from Power BI tooltip fields
           const tooltipContent = this.buildMarkerTooltipContent(row, columns);
           this.showTooltip(tooltipContent, event.latlng);
@@ -1150,7 +1149,6 @@ export class Visual implements IVisual {
             this.selectionManager
               .select(this.selectionIds[originalRowIndex])
               .then((ids: ISelectionId[]) => {
-                console.log("Selection result:", ids);
                 this.currentSelection = ids;
                 this.persistentSelection = [...ids];
 
@@ -1161,15 +1159,10 @@ export class Visual implements IVisual {
                 }
               })
               .catch((error) => {
-                console.error("Error in marker selection:", error);
                 // Fallback: show all markers if selection fails
                 if (this.selectionIds && this.selectionIds.length > 0) {
-                  console.log(
-                    "Falling back to show all markers due to selection error"
-                  );
                   this.updateMarkersVisibility(this.selectionIds);
                 } else {
-                  console.warn("No selection IDs available for fallback");
                   // Show all markers without selection
                   this.markers.forEach((marker) => {
                     if (!this.markerClusterGroup.hasLayer(marker)) {
@@ -1179,7 +1172,7 @@ export class Visual implements IVisual {
                 }
               });
           } else {
-            console.warn("No selection ID found for marker", index);
+            // No selection ID found for marker
           }
 
           L.DomEvent.stopPropagation(event);
@@ -1188,20 +1181,14 @@ export class Visual implements IVisual {
         // Add marker to cluster group instead of map
         this.markerClusterGroup.addLayer(marker);
         this.markers.push(marker);
-
-        console.log(`✅ Created marker ${index + 1} at [${lat}, ${lng}]`);
       });
 
       // Add cluster group to map if not already added
       if (!this.map.hasLayer(this.markerClusterGroup)) {
         this.markerClusterGroup.addTo(this.map);
       }
-
-      console.log(
-        `✅ Created ${this.markers.length} markers from ${validCoordinateRows.length} valid coordinate rows`
-      );
     } else {
-      console.log("⚠️  No valid latitude/longitude columns found for markers");
+      // No valid latitude/longitude columns found for markers
     }
   }
 
@@ -1222,15 +1209,10 @@ export class Visual implements IVisual {
         .withTable(dataView.table, index)
         .createSelectionId();
     });
-
-    console.log(
-      `✅ Created ${this.selectionIds.length} selection IDs for markers`
-    );
   }
 
   private updateChoroplethLayer() {
     if (!this.choroplethLayer) {
-      console.log("❌ No choropleth layer available");
       return;
     }
 
@@ -1238,16 +1220,29 @@ export class Visual implements IVisual {
     this.choroplethLayer.clearLayers();
 
     if (this.powerBIChoroplethData.length === 0) {
-      console.log("⚠️ No choropleth data to display");
       return;
     }
 
-    console.log(
-      `🔍 Creating ${this.powerBIChoroplethData.length} choropleth features`
+    // Filter choropleth data based on current Power BI data view
+    // Only show choropleth features that correspond to the current filtered data
+    const filteredChoroplethData = this.powerBIChoroplethData.filter(
+      (data, index) => {
+        // Check if this choropleth data corresponds to a row in the current filtered data
+        if (
+          !this.currentDataView ||
+          !this.currentDataView.table ||
+          !this.currentDataView.table.rows
+        ) {
+          return true; // No filtering, show all
+        }
+
+        // If the index is within the current filtered data range, show it
+        return index < this.currentDataView.table.rows.length;
+      }
     );
 
-    // Create GeoJSON features from Power BI data
-    const features = this.powerBIChoroplethData.map((data) => {
+    // Create GeoJSON features from filtered Power BI data
+    const features = filteredChoroplethData.map((data) => {
       const feature = {
         type: "Feature" as const,
         properties: {
@@ -1262,12 +1257,6 @@ export class Visual implements IVisual {
         geometry: data.geometry,
       };
 
-      // Debug: Log what we're setting for each feature
-      console.log(`🔍 Creating feature for ${data.countryName}:`, {
-        adminCode: data.adminCode,
-        properties: feature.properties,
-      });
-
       return feature;
     });
 
@@ -1276,31 +1265,19 @@ export class Visual implements IVisual {
       features: features,
     };
 
-    console.log(`🔍 Adding ${features.length} features to choropleth layer`);
-
     // Add data to choropleth layer
     this.choroplethLayer.addData(geoJsonData);
 
     // Add to map if not already added
     if (!this.map.hasLayer(this.choroplethLayer)) {
-      console.log("🔍 Adding choropleth layer to map");
       this.choroplethLayer.addTo(this.map);
-    } else {
-      console.log("🔍 Choropleth layer already on map");
     }
 
     // Don't fit bounds - keep our desired zoom level 2
     // This prevents the jarring zoom-in-then-zoom-out effect
-    console.log(
-      "🗺️ Keeping map at zoom level 2 - no bounds fitting for choropleth"
-    );
-
-    console.log(`✅ Updated choropleth layer with ${features.length} features`);
   }
 
   private clearAllData() {
-    console.log("🧹 clearAllData called - clearing all visual data");
-
     // Clear markers
     this.markers.forEach((marker) => {
       this.markerClusterGroup.removeLayer(marker);
@@ -1319,8 +1296,6 @@ export class Visual implements IVisual {
 
     // Clear choropleth data
     this.powerBIChoroplethData = [];
-
-    console.log("🧹 clearAllData completed - all data cleared");
   }
 
   private updateMarkersVisibility(selectedIds: ISelectionId[]) {
@@ -1332,16 +1307,13 @@ export class Visual implements IVisual {
 
       // Skip markers without selection IDs
       if (!markerSelectionId) {
-        console.warn(
-          `Marker ${index} has no selection ID, skipping visibility update`
-        );
         return;
       }
 
       // Check if this marker should be visible based on Power BI filtering
       // A marker should be visible if:
-      // 1. It's in the current filtered data view, OR
-      // 2. It's explicitly selected by the user
+      // 1. It's in the current filtered data view (Power BI filtering), OR
+      // 2. It's explicitly selected by the user (cross-filtering)
       const isInFilteredData = this.isMarkerInFilteredData(markerSelectionId);
       const isExplicitlySelected = selectedIds.some((id) => {
         if (!id) return false;
@@ -1355,11 +1327,9 @@ export class Visual implements IVisual {
         return id === markerSelectionId;
       });
 
+      // For Power BI filtering: show markers that are in the filtered data
+      // For cross-filtering: show markers that are explicitly selected
       const shouldBeVisible = isInFilteredData || isExplicitlySelected;
-
-      console.log(
-        `🔍 Marker ${index}: isInFilteredData=${isInFilteredData}, isExplicitlySelected=${isExplicitlySelected}, shouldBeVisible=${shouldBeVisible}`
-      );
 
       if (shouldBeVisible) {
         // Show marker
@@ -1378,46 +1348,44 @@ export class Visual implements IVisual {
       }
     });
 
-    console.log(
-      `📊 Marker visibility updated: ${visibleMarkers} visible, ${hiddenMarkers} hidden`
-    );
-
     // Check empty state after marker visibility update
     this.performEmptyStateCheck();
   }
 
   private isMarkerInFilteredData(markerSelectionId: ISelectionId): boolean {
-    // In Power BI, when filters are applied, the dataView.table.rows might not change
-    // Instead, we should check if this marker's selection ID is in the current Power BI selection
-    // If there's no current selection, all markers should be visible (no filter applied)
+    // Power BI filtering works by providing only the filtered data in dataView.table.rows
+    // We should show markers that correspond to the current filtered data view
 
-    // Check if there's a current selection
-    if (!this.currentSelection || this.currentSelection.length === 0) {
-      console.log(
-        "🔍 isMarkerInFilteredData: No current selection - all markers should be visible"
-      );
-      return true; // No filter applied, show all markers
+    if (
+      !this.currentDataView ||
+      !this.currentDataView.table ||
+      !this.currentDataView.table.rows
+    ) {
+      return true; // No data view, show all markers
     }
 
-    // Check if this marker's selection ID matches any of the currently selected items
-    const isSelected = this.currentSelection.some((selectedId) => {
-      if (!selectedId || !markerSelectionId) return false;
+    // Check if this marker's selection ID corresponds to a row in the current filtered data
+    const currentFilteredRows = this.currentDataView.table.rows;
 
-      if (selectedId.getKey && markerSelectionId.getKey) {
-        return selectedId.getKey() === markerSelectionId.getKey();
+    // Find the marker's index in the original data
+    const markerIndex = this.selectionIds.findIndex((id) => {
+      if (!id || !markerSelectionId) return false;
+
+      if (id.getKey && markerSelectionId.getKey) {
+        return id.getKey() === markerSelectionId.getKey();
       }
-      if (selectedId.toString && markerSelectionId.toString) {
-        return selectedId.toString() === markerSelectionId.toString();
+      if (id.toString && markerSelectionId.toString) {
+        return id.toString() === markerSelectionId.toString();
       }
-      return selectedId === markerSelectionId;
+      return id === markerSelectionId;
     });
 
-    console.log(
-      `🔍 isMarkerInFilteredData: Marker ${
-        isSelected ? "IS" : "is NOT"
-      } in current selection`
-    );
-    return isSelected;
+    // If marker index is found and it's within the current filtered data range, show it
+    if (markerIndex >= 0 && markerIndex < currentFilteredRows.length) {
+      return true;
+    }
+
+    return false;
   }
 
   private showTooltip(content: string, latlng: L.LatLng) {
@@ -1476,11 +1444,6 @@ export class Visual implements IVisual {
         choroplethTooltipData instanceof Map &&
         choroplethTooltipData.size > 0
       ) {
-        console.log(
-          `🔍 Building tooltip for ${name} with Power BI tooltip data:`,
-          choroplethTooltipData
-        );
-
         // Display all tooltip fields from Power BI (same as marker tooltip)
         choroplethTooltipData.forEach((value, key) => {
           if (
@@ -1515,10 +1478,6 @@ export class Visual implements IVisual {
     if (feature.properties?.tooltipData) {
       const tooltipData = feature.properties.tooltipData;
       if (tooltipData instanceof Map && tooltipData.size > 0) {
-        console.log(
-          `🔍 Building tooltip for ${name} with legacy tooltip data:`,
-          tooltipData
-        );
         tooltipData.forEach((value, key) => {
           if (value !== null && value !== undefined && value !== "NA") {
             tooltipParts.push(
@@ -1585,7 +1544,6 @@ export class Visual implements IVisual {
       this.emptyStateDiv.style.opacity = "1";
       this.emptyStateDiv.style.pointerEvents = "auto";
       this.emptyStateDiv.style.display = "block";
-      console.log("Empty state shown - no distribution data available");
     }
   }
 
@@ -1593,7 +1551,6 @@ export class Visual implements IVisual {
     if (this.emptyStateDiv) {
       this.emptyStateDiv.style.opacity = "0";
       this.emptyStateDiv.style.pointerEvents = "none";
-      console.log("Empty state hidden - distribution data available");
     }
   }
 
@@ -1602,14 +1559,16 @@ export class Visual implements IVisual {
       try {
         this.ensureEmptyStateDivPosition();
         const hasAnyData = this.hasAnyDistributionData();
+        const hasBaseMapUrl =
+          this.settings?.mapSettingsCard?.baseMapUrl?.value?.trim() !== "";
 
-        if (hasAnyData) {
+        // Only show empty state if there's no data AND no base map URL
+        if (hasAnyData || hasBaseMapUrl) {
           this.hideEmptyState();
         } else {
           this.showEmptyState();
         }
       } catch (error) {
-        console.error("Error in empty state check:", error);
         this.showEmptyState();
       }
     }, 100);
@@ -1633,20 +1592,8 @@ export class Visual implements IVisual {
       const result =
         hasVisibleData || (hasDataAvailable && !this.currentSelection?.length);
 
-      console.log("Distribution data check:", {
-        totalMarkers,
-        visibleMarkers,
-        hasChoroplethData,
-        hasOriginalData,
-        hasVisibleData,
-        hasDataAvailable,
-        currentSelectionLength: this.currentSelection?.length || 0,
-        hasAnyData: result,
-      });
-
       return result;
     } catch (error) {
-      console.error("Error in hasAnyDistributionData:", error);
       return false;
     }
   }
@@ -1673,20 +1620,16 @@ export class Visual implements IVisual {
         );
       });
     } catch (error) {
-      console.error("Error getting current data context:", error);
       return [];
     }
   }
 
   private handleMarkerDeselection(clickedMarkerIndex: number): void {
     try {
-      console.log(`Handling deselection for marker ${clickedMarkerIndex}`);
-
       // Safety check for selection IDs
       if (this.selectionIds && this.selectionIds.length > 0) {
         this.updateMarkersVisibility(this.selectionIds);
       } else {
-        console.warn("No selection IDs available for deselection handling");
         // Show all markers without selection
         this.markers.forEach((marker) => {
           if (!this.markerClusterGroup.hasLayer(marker)) {
@@ -1695,7 +1638,6 @@ export class Visual implements IVisual {
         });
       }
     } catch (error) {
-      console.error("Error handling marker deselection:", error);
       // Fallback: show all markers
       this.markers.forEach((marker) => {
         if (!this.markerClusterGroup.hasLayer(marker)) {
@@ -1707,31 +1649,25 @@ export class Visual implements IVisual {
 
   private showOnlyCurrentContextMarkers(): void {
     try {
-      console.log("Showing only markers in current filtered context");
       this.updateMarkersVisibility(this.selectionIds);
     } catch (error) {
-      console.error("Error showing current context markers:", error);
+      // Error showing current context markers
     }
   }
 
   private restoreSelectionState(): void {
     try {
       if (this.persistentSelection.length > 0) {
-        console.log(
-          "Restoring persistent selection state:",
-          this.persistentSelection
-        );
         this.currentSelection = [...this.persistentSelection];
         this.updateMarkersVisibility(this.persistentSelection);
       }
     } catch (error) {
-      console.error("Error restoring selection state:", error);
+      // Error restoring selection state
     }
   }
 
   public clearSelection(): void {
     try {
-      console.log("Clearing all selections");
       this.selectionManager
         .clear()
         .then(() => {
@@ -1740,14 +1676,32 @@ export class Visual implements IVisual {
           this.showOnlyCurrentContextMarkers();
         })
         .catch((error) => {
-          console.error("Error clearing selection:", error);
           this.currentSelection = [];
           this.persistentSelection = [];
           this.showOnlyCurrentContextMarkers();
         });
     } catch (error) {
-      console.error("Error in clearSelection:", error);
+      // Error in clearSelection
     }
+  }
+
+  public enumerateObjectInstances(
+    options: powerbiVisualsApi.EnumerateVisualObjectInstancesOptions
+  ): powerbiVisualsApi.VisualObjectInstanceEnumeration {
+    const objectName = options.objectName;
+    const objectEnumeration: powerbiVisualsApi.VisualObjectInstance[] = [];
+
+    if (objectName === "mapSettings") {
+      objectEnumeration.push({
+        objectName: objectName,
+        properties: {
+          baseMapUrl: this.settings.mapSettingsCard.baseMapUrl.value || "",
+        },
+        selector: null,
+      });
+    }
+
+    return objectEnumeration;
   }
 
   public destroy(): void {
@@ -1760,9 +1714,8 @@ export class Visual implements IVisual {
       this.powerBIChoroplethData = [];
       this.currentSelection = [];
       this.persistentSelection = [];
-      console.log("Visual destroyed and cleaned up");
     } catch (error) {
-      console.error("Error during visual destruction:", error);
+      // Error during visual destruction
     }
   }
 
@@ -1773,9 +1726,8 @@ export class Visual implements IVisual {
       }
       this.ensureEmptyStateDivPosition();
       this.performEmptyStateCheck();
-      console.log("Visual resized and updated");
     } catch (error) {
-      console.error("Error during visual resize:", error);
+      // Error during visual resize
     }
   }
 
@@ -1809,10 +1761,8 @@ export class Visual implements IVisual {
       if (!this.map.hasLayer(this.disputedBordersLayer)) {
         this.disputedBordersLayer.addTo(this.map);
       }
-
-      console.log("Disputed borders loaded successfully");
     } catch (error) {
-      console.error("Error loading disputed borders:", error);
+      // Error loading disputed borders
     }
   }
 }
