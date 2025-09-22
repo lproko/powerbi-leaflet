@@ -1,13 +1,6 @@
 {
   "dataRoles": [
     {
-      "name": "choroplethGeometry",
-      "kind": "Grouping",
-      "displayName": "Choropleth Geometry",
-      "description": "Complete GeoJSON geometry data for choropleth regions"
-    },
-
-    {
       "name": "latitude",
       "kind": "Grouping",
       "displayName": "Latitude",
@@ -26,10 +19,16 @@
       "description": "Additional data for tooltips"
     },
     {
+      "name": "adminCode",
+      "kind": "GroupingOrMeasure",
+      "displayName": "Admin Code",
+      "description": "Administrative code number"
+    },
+    {
       "name": "choroplethTooltip",
       "kind": "GroupingOrMeasure",
       "displayName": "Choropleth Tooltip",
-      "description": "Additional data for choropleth tooltips"
+      "description": "Data to display in choropleth tooltips"
     }
   ],
   "dataViewMappings": [
@@ -37,11 +36,6 @@
       "table": {
         "rows": {
           "select": [
-            {
-              "for": {
-                "in": "choroplethGeometry"
-              }
-            },
             {
               "for": {
                 "in": "latitude"
@@ -59,6 +53,11 @@
             },
             {
               "for": {
+                "in": "adminCode"
+              }
+            },
+            {
+              "for": {
                 "in": "choroplethTooltip"
               }
             }
@@ -68,44 +67,6 @@
     }
   ],
   "objects": {
-    "choroplethSettings": {
-      "displayName": "Choropleth Settings",
-      "properties": {
-        "showChoropleth": {
-          "displayName": "Show Choropleth",
-          "type": {
-            "bool": true
-          }
-        },
-        "colorScheme": {
-          "displayName": "Color Scheme",
-          "type": {
-            "enumeration": [
-              {
-                "value": "YlOrRd",
-                "displayName": "Yellow-Orange-Red"
-              },
-              {
-                "value": "Blues",
-                "displayName": "Blues"
-              },
-              {
-                "value": "Greens",
-                "displayName": "Greens"
-              },
-              {
-                "value": "Reds",
-                "displayName": "Reds"
-              },
-              {
-                "value": "Viridis",
-                "displayName": "Viridis"
-              }
-            ]
-          }
-        }
-      }
-    },
     "mapSettings": {
       "displayName": "Map Settings",
       "properties": {

@@ -17,37 +17,6 @@ import { disputedBorders } from "./disputed-borders";
 import customGeoJSON from "./custom.geo.json";
 import { VisualFormattingSettingsModel } from "./settings";
 
-interface ChoroplethFeature {
-  type: string;
-  properties: {
-    admin_boundary?: string;
-    admin_level?: number;
-    choropleth_value?: number;
-    name?: string;
-    gaul_code?: number;
-    gaul0_code?: number;
-    gaul0_name?: string;
-    iso3_code?: string;
-    continent?: string;
-    disp_en?: string;
-    adminCode?: number | string;
-    countryName?: string;
-    isoCode?: string;
-  };
-  geometry: any;
-}
-
-interface PowerBIChoroplethData {
-  adminCode: number | string;
-  geometry: any;
-  choroplethValue: number;
-  countryName: string;
-  isoCode: string;
-  continent: string;
-  tooltipData: Map<string, any>;
-  choroplethTooltipData: Map<string, any>; // Power BI choropleth tooltip data
-}
-
 export class Visual implements IVisual {
   private target: HTMLElement;
   private map: L.Map;
@@ -57,20 +26,18 @@ export class Visual implements IVisual {
   private selectionIds: ISelectionId[] = [];
   private markerClusterGroup: L.MarkerClusterGroup;
   private baseMapLayer: L.GeoJSON;
-  private choroplethLayer: L.GeoJSON;
   private disputedBordersLayer: L.GeoJSON;
-  private colorScale: (value: number) => string;
-  private choroplethSettings: {
-    showChoropleth: boolean;
-    colorScheme: string;
-  };
   private tooltipDiv: HTMLElement;
   private emptyStateDiv: HTMLElement;
+  private loaderDiv: HTMLElement;
   private currentSelection: ISelectionId[] = [];
   private persistentSelection: ISelectionId[] = [];
-  private powerBIChoroplethData: PowerBIChoroplethData[] = [];
   private currentDataView: DataView;
   private settings: VisualFormattingSettingsModel;
+  private geoJsonFeatures: any[] = []; // Store GeoJSON features for gaul_code lookup
+  private choroplethLayer: L.GeoJSON<any> | null = null; // Choropleth layer for highlighting matching regions
+  private isLoading: boolean = false;
+  private loadingOperations: Set<string> = new Set();
 
   constructor(options: VisualConstructorOptions) {
     this.target = options.element;
@@ -79,15 +46,6 @@ export class Visual implements IVisual {
 
     // Initialize settings
     this.settings = new VisualFormattingSettingsModel();
-
-    // Initialize choropleth settings
-    this.choroplethSettings = {
-      showChoropleth: true,
-      colorScheme: "Viridis",
-    };
-
-    // Initialize color scale
-    this.colorScale = this.createColorScale();
 
     const mapElement = document.createElement("div");
     mapElement.id = "map";
@@ -149,6 +107,47 @@ export class Visual implements IVisual {
     this.emptyStateDiv.innerHTML = `No distribution information available`;
     this.target.appendChild(this.emptyStateDiv);
 
+    // Create loader div
+    this.loaderDiv = document.createElement("div");
+    this.loaderDiv.className = "loader";
+    this.loaderDiv.style.cssText = `
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 10000;
+      background: rgba(255, 255, 255, 0.9);
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      display: none;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      font-size: 14px;
+      color: #333;
+      text-align: center;
+    `;
+    this.loaderDiv.innerHTML = `
+      <div style="margin-bottom: 10px;">
+        <div style="
+          width: 24px;
+          height: 24px;
+          border: 3px solid #f3f3f3;
+          border-top: 3px solid #3498db;
+          border-radius: 50%;
+          animation: spin 1s linear infinite;
+          margin: 0 auto;
+        "></div>
+      </div>
+      Loading map data...
+      <style>
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      </style>
+    `;
+    this.target.appendChild(this.loaderDiv);
+
     this.map = L.map(mapElement, {
       zoomControl: false,
       attributionControl: false,
@@ -186,18 +185,17 @@ export class Visual implements IVisual {
         this.onEachBaseMapFeature(feature, layer),
     });
 
-    // Initialize choropleth layer
-    this.choroplethLayer = L.geoJSON(null, {
-      style: (feature) => this.getChoroplethStyle(feature),
-      onEachFeature: (feature, layer) =>
-        this.onEachChoroplethFeature(feature, layer),
-    });
-
     // Initialize disputed borders layer
     this.disputedBordersLayer = L.geoJSON(null, {
       style: (feature) => this.getDisputedBorderStyle(feature),
       onEachFeature: (feature, layer) =>
         this.onEachDisputedBorderFeature(feature, layer),
+    });
+
+    // Initialize choropleth layer for highlighting matching regions
+    this.choroplethLayer = L.geoJSON(null, {
+      style: this.getChoroplethStyle.bind(this),
+      onEachFeature: this.onEachChoroplethFeature.bind(this),
     });
 
     // Initialize marker cluster group
@@ -371,85 +369,13 @@ export class Visual implements IVisual {
     this.setupZoomControls();
   }
 
-  private createColorScale(): (value: number) => string {
-    const colorSchemes = {
-      YlOrRd: [
-        "#ffffb2",
-        "#fed976",
-        "#feb24c",
-        "#fd8d3c",
-        "#fc4e2a",
-        "#e31a1c",
-        "#b10026",
-      ],
-      Blues: [
-        "#f7fbff",
-        "#deebf7",
-        "#c6dbef",
-        "#9ecae1",
-        "#6baed6",
-        "#3182bd",
-        "#08519c",
-      ],
-      Greens: [
-        "#f7fcf5",
-        "#e5f5e0",
-        "#c7e9c0",
-        "#a1d99b",
-        "#74c476",
-        "#41ab5d",
-        "#238b45",
-      ],
-      Reds: [
-        "#fff5f0",
-        "#fee0d2",
-        "#fcbba1",
-        "#fc9272",
-        "#fb6a4a",
-        "#ef3b2c",
-        "#cb181d",
-      ],
-      Viridis: [
-        "#440154",
-        "#482878",
-        "#3e4989",
-        "#31688e",
-        "#26828e",
-        "#1f9e89",
-        "#35b779",
-        "#6ece58",
-        "#b5de2b",
-        "#fde725",
-      ],
-    };
-
-    const colors =
-      colorSchemes[
-        this.choroplethSettings.colorScheme as keyof typeof colorSchemes
-      ] || colorSchemes.Viridis;
-
-    return (value: number): string => {
-      if (value === null || value === undefined || isNaN(value)) {
-        return colors[0];
-      }
-
-      const clampedValue = Math.max(0, Math.min(1, value));
-      const index = Math.min(
-        Math.floor(clampedValue * (colors.length - 1)),
-        colors.length - 1
-      );
-
-      return colors[index];
-    };
-  }
-
   private getBaseMapStyle() {
     return {
       fillColor: "#F2F2F2",
       weight: 0.5,
       opacity: 1,
       color: "#666666",
-      fillOpacity: 0.3,
+      fillOpacity: 1,
     };
   }
 
@@ -511,9 +437,6 @@ export class Visual implements IVisual {
       this.baseMapLayer.addData(geoData);
       this.map.addLayer(this.baseMapLayer);
 
-      // Process for choropleth
-      this.processCustomGeoJSONToChoropleth(geoData);
-
       // Don't fit bounds - keep our desired zoom level 2
       // This prevents the jarring zoom-in-then-zoom-out effect
 
@@ -528,43 +451,55 @@ export class Visual implements IVisual {
     const baseMapUrl = this.settings?.mapSettingsCard?.baseMapUrl?.value;
 
     if (baseMapUrl && baseMapUrl.trim() !== "") {
-      console.log("Loading map from URL:", baseMapUrl);
       this.hideBaseMapMessage();
       this.loadMapDataFromUrl(baseMapUrl);
+
+      // Add markers to map now that base map is loaded
+      if (
+        this.markers.length > 0 &&
+        !this.map.hasLayer(this.markerClusterGroup)
+      ) {
+        this.markerClusterGroup.addTo(this.map);
+      }
     } else {
-      console.log("No URL provided - showing message");
+      // Remove markers from map if no URL
+      if (this.map.hasLayer(this.markerClusterGroup)) {
+        this.map.removeLayer(this.markerClusterGroup);
+      }
       this.showBaseMapMessage();
     }
   }
 
   private async loadMapDataFromUrl(url: string) {
     try {
-      console.log("Attempting to fetch URL:", url);
+      this.showLoader("baseMap");
       const response = await fetch(url);
-      console.log("Response status:", response.status);
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
       const geoData = await response.json();
-      console.log("GeoJSON data received:", geoData);
 
       // Validate GeoJSON structure
       if (!geoData.type || !geoData.features) {
         throw new Error("Invalid GeoJSON format - missing type or features");
       }
 
+      // Store GeoJSON features for gaul_code lookup
+      this.geoJsonFeatures = geoData.features;
+
+      // Update choropleth layer with the loaded features
+      this.updateChoroplethLayer();
+
       // Add to base map layer
       this.baseMapLayer.addData(geoData);
       this.map.addLayer(this.baseMapLayer);
 
-      // Process for choropleth
-      this.processCustomGeoJSONToChoropleth(geoData);
-
-      console.log("Map loaded successfully from URL");
+      this.hideLoader("baseMap");
     } catch (error) {
       console.error("Error loading base map from URL:", error);
+      this.hideLoader("baseMap");
       this.showUrlErrorMessage(url, error.message);
     }
   }
@@ -572,16 +507,25 @@ export class Visual implements IVisual {
   private updateSettingsFromPowerBI(options: VisualUpdateOptions) {
     // Access settings from the dataView metadata
     const dataView = options.dataViews[0];
+
     if (dataView && dataView.metadata && dataView.metadata.objects) {
       const mapSettings = dataView.metadata.objects.mapSettings;
-      if (mapSettings && mapSettings.baseMapUrl) {
-        this.settings.mapSettingsCard.baseMapUrl.value = String(
-          mapSettings.baseMapUrl
-        );
-        console.log(
-          "Updated baseMapUrl from Power BI:",
-          mapSettings.baseMapUrl
-        );
+
+      if (mapSettings) {
+        // Always update the setting, even if it's empty
+        const newUrl = mapSettings.baseMapUrl
+          ? String(mapSettings.baseMapUrl)
+          : "";
+        const currentUrl = this.settings.mapSettingsCard.baseMapUrl.value;
+
+        this.settings.mapSettingsCard.baseMapUrl.value = newUrl;
+
+        // If URL changed, trigger immediate reload
+        if (currentUrl !== newUrl) {
+          setTimeout(() => {
+            this.handleBaseMapUrlChange();
+          }, 50); // Reduced timeout from 100ms to 50ms
+        }
       }
     }
   }
@@ -595,10 +539,14 @@ export class Visual implements IVisual {
       this.emptyStateDiv.innerHTML = `
         <div style="text-align: center; padding: 20px;">
           <div style="font-size: 14px; font-weight: bold; margin-bottom: 10px; color: #22294B;">
-            Base Map Required
+            Setup Required
           </div>
-          <div style="font-size: 12px; color: #666; line-height: 1.4;">
-            Please provide a Base Map GeoJSON URL in the Map Settings to load your custom map.
+          <div style="font-size: 12px; color: #666; line-height: 1.6;">
+            <div style="margin-bottom: 8px;"><strong>Step 1:</strong> Add Latitude and Longitude fields to your visual</div>
+            <div style="margin-bottom: 8px;"><strong>Step 2:</strong> Add a Base Map GeoJSON URL in Map Settings</div>
+            <div style="font-size: 11px; color: #888; margin-top: 10px;">
+              For best results, add your data fields first, then configure the map URL.
+            </div>
           </div>
         </div>
       `;
@@ -608,6 +556,45 @@ export class Visual implements IVisual {
 
   private hideBaseMapMessage() {
     this.hideEmptyState();
+  }
+
+  private showUrlRequiredMessage() {
+    // Clear any existing base map
+    this.baseMapLayer.clearLayers();
+
+    // Show message in the empty state div
+    if (this.emptyStateDiv) {
+      this.emptyStateDiv.innerHTML = `
+        <div style="text-align: center; padding: 20px;">
+          <div style="font-size: 14px; font-weight: bold; margin-bottom: 10px; color: #22294B;">
+            Almost Ready!
+          </div>
+          <div style="font-size: 12px; color: #666; line-height: 1.6;">
+            <div style="margin-bottom: 8px;">✅ Data fields added successfully</div>
+            <div style="margin-bottom: 8px;"><strong>Next:</strong> Add a Base Map GeoJSON URL in Map Settings</div>
+            <div style="font-size: 11px; color: #888; margin-top: 10px;">
+              Once you provide the URL, your map and markers will appear.
+            </div>
+          </div>
+        </div>
+      `;
+      this.showEmptyState();
+    }
+  }
+
+  private showNoDataMessage() {
+    // Show message in the empty state div
+    if (this.emptyStateDiv) {
+      this.emptyStateDiv.innerHTML = `
+        <div style="text-align: center; padding: 20px;">
+          <div style="font-size: 12px; font-weight: bold; margin-bottom: 10px; color: #22294B;">
+            No distribution information available
+          </div>
+          
+        </div>
+      `;
+      this.showEmptyState();
+    }
   }
 
   private showUrlErrorMessage(url: string, errorMessage: string) {
@@ -631,7 +618,10 @@ export class Visual implements IVisual {
             ${errorMessage}
           </div>
           <div style="font-size: 11px; color: #666; margin-top: 10px;">
-            Please check the URL and try again.
+            <strong>Tips:</strong><br/>
+            • Ensure the URL is publicly accessible<br/>
+            • Use direct download links (not Google Drive sharing links)<br/>
+            • Verify the URL contains valid GeoJSON data
           </div>
         </div>
       `;
@@ -662,155 +652,263 @@ export class Visual implements IVisual {
     }
   }
 
-  private processCustomGeoJSONToChoropleth(geoData: any) {
-    const processingStartTime = performance.now();
+  private checkAdminCodeMatch(adminCode: any): boolean {
+    if (!adminCode || this.geoJsonFeatures.length === 0) {
+      return false;
+    }
 
-    if (!geoData.features || !Array.isArray(geoData.features)) {
-      this.powerBIChoroplethData = [];
+    // Convert adminCode to string for comparison
+    const adminCodeStr = String(adminCode);
+
+    // Show first few gaul_code values for debugging
+    this.geoJsonFeatures.slice(0, 5).forEach((feature, index) => {
+      const gaulCode = feature.properties?.gaul_code;
+    });
+
+    // Check if any GeoJSON feature has a matching gaul_code
+    const match = this.geoJsonFeatures.find((feature) => {
+      const gaulCode = feature.properties?.gaul_code;
+      const gaulCodeStr = String(gaulCode);
+      const isMatch = gaulCode && gaulCodeStr === adminCodeStr;
+
+      return isMatch;
+    });
+
+    if (match) {
+      return true;
+    }
+
+    return false;
+  }
+
+  // Choropleth styling method
+  private getChoroplethStyle(feature: any): L.PathOptions {
+    // Since we only add matching features to the choropleth layer, all features should be styled as matches
+    return {
+      fillColor: "#455E6F", // Blue-gray for all choropleth features (they are all matches)
+      weight: 1,
+      opacity: 1,
+      fillOpacity: 1,
+      color: "black", // Black border for all choropleth features
+    };
+  }
+
+  // Choropleth feature handler
+  private onEachChoroplethFeature(feature: any, layer: L.Layer): void {
+    const adminCodes = this.getAdminCodesFromData();
+    const gaulCode = feature.properties?.gaul0_code;
+    const isMatch = adminCodes.includes(String(gaulCode));
+
+    if (isMatch) {
+      // Get choropleth tooltip data for this region
+      const choroplethTooltipData =
+        this.getChoroplethTooltipDataForRegion(gaulCode);
+      const regionName =
+        feature.properties?.gaul0_name ||
+        feature.properties?.disp_en ||
+        "Unknown Region";
+
+      layer.on("click", (e) => {
+        // Show tooltip on click with choropleth data using same format as markers
+        const tooltipContent = this.buildChoroplethTooltipContent(gaulCode);
+        this.showTooltip(tooltipContent, e.latlng);
+
+        // Stop event propagation to prevent map click
+        L.DomEvent.stopPropagation(e);
+      });
+    }
+  }
+
+  // Get all Admin Codes from current data
+  private getAdminCodesFromData(): string[] {
+    if (
+      !this.currentDataView?.table?.columns ||
+      !this.currentDataView?.table?.rows
+    ) {
+      return [];
+    }
+
+    const columns = this.currentDataView.table.columns;
+    const adminCodeColIndex = columns.findIndex((col) => col.roles?.adminCode);
+
+    if (adminCodeColIndex === -1) {
+      return [];
+    }
+
+    const adminCodes = this.currentDataView.table.rows
+      .map((row) => String(row[adminCodeColIndex]))
+      .filter((code) => code && code !== "undefined" && code !== "null");
+
+    return adminCodes;
+  }
+
+  // Get choropleth tooltip data for a specific region (GAUL code)
+  private getChoroplethTooltipDataForRegion(gaulCode: any): string | null {
+    if (
+      !this.currentDataView?.table?.columns ||
+      !this.currentDataView?.table?.rows
+    ) {
+      return null;
+    }
+
+    const columns = this.currentDataView.table.columns;
+    const adminCodeColIndex = columns.findIndex((col) => col.roles?.adminCode);
+    const choroplethTooltipColIndex = columns.findIndex(
+      (col) => col.roles?.choroplethTooltip
+    );
+
+    if (adminCodeColIndex === -1 || choroplethTooltipColIndex === -1) {
+      return null;
+    }
+
+    // Find the first row that matches this GAUL code
+    const matchingRow = this.currentDataView.table.rows.find((row) => {
+      const rowAdminCode = String(row[adminCodeColIndex]);
+      return rowAdminCode === String(gaulCode);
+    });
+
+    if (matchingRow) {
+      const choroplethTooltipValue = matchingRow[choroplethTooltipColIndex];
+      return choroplethTooltipValue ? String(choroplethTooltipValue) : null;
+    }
+
+    return null;
+  }
+
+  // Build choropleth tooltip content using same format as marker tooltips
+  private buildChoroplethTooltipContent(gaulCode: any): string {
+    if (
+      !this.currentDataView?.table?.columns ||
+      !this.currentDataView?.table?.rows
+    ) {
+      return `Matched Region (Code: ${gaulCode})`;
+    }
+
+    const columns = this.currentDataView.table.columns;
+    const adminCodeColIndex = columns.findIndex((col) => col.roles?.adminCode);
+    const choroplethTooltipColIndex = columns.findIndex(
+      (col) => col.roles?.choroplethTooltip
+    );
+
+    if (adminCodeColIndex === -1 || choroplethTooltipColIndex === -1) {
+      return `Matched Region (Code: ${gaulCode})`;
+    }
+
+    // Find ALL rows that match this GAUL code
+    const matchingRows = this.currentDataView.table.rows.filter((row) => {
+      const rowAdminCode = String(row[adminCodeColIndex]);
+      return rowAdminCode === String(gaulCode);
+    });
+
+    if (matchingRows.length === 0) {
+      return `Matched Region (Code: ${gaulCode})`;
+    }
+
+    const tooltipParts = [];
+
+    // Add all choropleth tooltip data from matching rows
+    matchingRows.forEach((row, index) => {
+      // Find all tooltip-related column indices
+      const tooltipColIndices = columns
+        .map((col, colIndex) => (col.roles?.tooltip ? colIndex : -1))
+        .filter((colIndex) => colIndex !== -1);
+
+      // Add all tooltip fields from Power BI tooltip fields
+      if (tooltipColIndices.length > 0) {
+        tooltipColIndices.forEach((colIndex) => {
+          const value = row[colIndex];
+          const columnName = columns[colIndex].displayName;
+
+          if (
+            value !== null &&
+            value !== undefined &&
+            value !== "" &&
+            value !== "NA"
+          ) {
+            const displayName =
+              matchingRows.length > 1
+                ? `${columnName} ${index + 1}`
+                : columnName;
+
+            tooltipParts.push(
+              `<div class="tooltip-row"><span class="field-name">${displayName}</span><span class="field-value">${value}</span></div>`
+            );
+          }
+        });
+      }
+    });
+
+    // If no choropleth tooltip data found, show region info as fallback
+    if (tooltipParts.length === 0) {
+      tooltipParts.push(
+        `<div class="tooltip-row"><span class="field-name">Region Code</span><span class="field-value">${gaulCode}</span></div>`
+      );
+    }
+
+    return tooltipParts.join("");
+  }
+
+  // Update choropleth layer with current data
+  private updateChoroplethLayer(): void {
+    if (!this.choroplethLayer || this.geoJsonFeatures.length === 0) {
       return;
     }
 
-    // Pre-allocate array for better performance
-    this.powerBIChoroplethData = new Array(geoData.features.length);
-    let processedCount = 0;
+    // Show loader for choropleth processing
+    this.showLoader("choropleth");
 
-    // Use for loop instead of forEach for better performance
-    for (let index = 0; index < geoData.features.length; index++) {
-      const feature = geoData.features[index];
+    // Clear existing choropleth data
+    this.choroplethLayer.clearLayers();
 
-      try {
-        if (feature.geometry && feature.properties) {
-          const properties = feature.properties;
+    // Get Admin Codes from current data
+    const adminCodes = this.getAdminCodesFromData();
 
-          // Optimized property access with fallbacks
-          const choroplethData: PowerBIChoroplethData = {
-            adminCode:
-              feature.properties?.adminCode ||
-              feature.properties?.gaul_code ||
-              feature.properties?.gaul0_code ||
-              index,
+    // Debug: Show all available gaul_code values in GeoJSON
+    const allGaulCodes = this.geoJsonFeatures
+      .map((feature) => feature.properties?.gaul_code)
+      .filter((code) => code !== undefined);
 
-            geometry: feature.geometry,
-            choroplethValue:
-              feature.properties?.value ||
-              feature.properties?.choropleth_value ||
-              0, // No artificial value - let it use neutral styling
-            countryName:
-              feature.properties?.name ||
-              feature.properties?.countryName ||
-              feature.properties?.gaul0_name ||
-              `Feature ${index}`,
-            isoCode:
-              feature.properties?.iso3_code ||
-              feature.properties?.isoCode ||
-              "",
-            continent: feature.properties?.continent || "",
-            tooltipData: new Map(),
-            choroplethTooltipData: new Map(),
-          };
+    // Find matching features and create choropleth polygons
+    const matchingFeatures = this.geoJsonFeatures.filter((feature) => {
+      const gaulCode = feature.properties?.gaul_code;
+      const gaulCodeStr = String(gaulCode);
 
-          // Only add non-empty properties to tooltip data for performance
-          for (const [key, value] of Object.entries(properties)) {
-            if (value != null && value !== "") {
-              choroplethData.tooltipData.set(key, value);
-            }
-          }
+      const isMatch = adminCodes.includes(gaulCodeStr);
 
-          this.powerBIChoroplethData[index] = choroplethData;
-          processedCount++;
+      return isMatch;
+    });
 
-          // Log first few features for debugging
-          if (index < 3) {
-            // Processed feature
-          }
-        }
-      } catch (error) {
-        // Keep the array slot empty for this index
+    // Only add choropleth layer to map if we have matching features
+    if (matchingFeatures.length > 0) {
+      this.choroplethLayer.addData({
+        type: "FeatureCollection",
+        features: matchingFeatures,
+      } as any);
+
+      // Add choropleth layer to map if not already added
+      if (!this.map.hasLayer(this.choroplethLayer)) {
+        this.choroplethLayer.addTo(this.map);
       }
-    }
-
-    // Remove any undefined entries and log results
-    this.powerBIChoroplethData = this.powerBIChoroplethData.filter(Boolean);
-    this.logPerformance("Choropleth processing", processingStartTime);
-  }
-
-  private getChoroplethStyle(feature: any) {
-    const choroplethValue = feature.properties?.choropleth_value;
-    const adminCode = feature.properties?.adminCode;
-
-    // Check if this is a Power BI feature (has choropleth_value) or base map feature
-    if (choroplethValue !== null && choroplethValue !== undefined) {
-      // This is a Power BI feature - make it #455E6F
-      return {
-        fillColor: "#455E6F", // #455E6F color for Power BI features
-        weight: 1,
-        opacity: 1,
-        color: "#455E6F", // Same #455E6F for border
-        fillOpacity: 0.8,
-      };
     } else {
-      // This is a base map feature - keep neutral color
-      return {
-        fillColor: "#F2F2F2", // Light gray for base map
-        weight: 0.5,
-        opacity: 1,
-        color: "#666666",
-        fillOpacity: 0.3,
-      };
-    }
-  }
-
-  private onEachChoroplethFeature(feature: any, layer: L.Layer) {
-    if (feature.properties) {
-      const name =
-        feature.properties.name ||
-        feature.properties.countryName ||
-        "Unknown Region";
-      const value = feature.properties.choropleth_value || "N/A";
-      const countryCode =
-        feature.properties.isoCode || feature.properties.iso3_code || "";
-      const continent = feature.properties.continent || "";
-
-      // Only add click functionality to Power BI features (those with choropleth_value)
-      if (
-        feature.properties.choropleth_value !== null &&
-        feature.properties.choropleth_value !== undefined
-      ) {
-        // This is a Power BI feature - make it interactive
-        layer.on({
-          click: (e) => {
-            const layer = e.target;
-            layer.setStyle({
-              weight: 3,
-              color: "#666",
-              fillOpacity: 0.9,
-            });
-            layer.bringToFront();
-
-            // Show tooltip on click
-            const tooltipContent = this.buildChoroplethTooltipContent(feature);
-            this.showTooltip(tooltipContent, e.latlng);
-
-            // Reset style after 2 seconds
-            setTimeout(() => {
-              this.choroplethLayer.resetStyle(e.target);
-            }, 2000);
-          },
-          mouseover: (e) => {
-            // Change cursor to pointer when hovering over Power BI choropleth
-            const layer = e.target;
-            layer.getElement().style.cursor = "pointer";
-          },
-          mouseout: (e) => {
-            // Reset cursor when leaving Power BI choropleth
-            const layer = e.target;
-            layer.getElement().style.cursor = "";
-          },
-        });
-      } else {
-        // This is a base map feature - no click functionality
+      // Remove choropleth layer from map if no matches
+      if (this.map.hasLayer(this.choroplethLayer)) {
+        this.map.removeLayer(this.choroplethLayer);
       }
     }
+
+    // Hide loader after choropleth processing is complete
+    this.hideLoader("choropleth");
+  }
+
+  // Add a method to force URL reload (can be called externally if needed)
+  public reloadBaseMap() {
+    this.handleBaseMapUrlChange();
+  }
+
+  // Method to manually update settings (for debugging)
+  public updateSettingsManually(url: string) {
+    this.settings.mapSettingsCard.baseMapUrl.value = url;
+    this.handleBaseMapUrlChange();
   }
 
   public update(options: VisualUpdateOptions) {
@@ -818,10 +916,12 @@ export class Visual implements IVisual {
 
     if (!options || !options.dataViews || options.dataViews.length === 0) {
       this.clearAllData();
+      // Still try to handle base map URL even with no data
+      this.handleBaseMapUrlChange();
       return;
     }
 
-    // Update settings from Power BI
+    // Update settings from Power BI (this works better when data is present)
     this.updateSettingsFromPowerBI(options);
 
     // Check if base map URL has changed and reload if necessary
@@ -906,18 +1006,12 @@ export class Visual implements IVisual {
         // Process marker data from Power BI (lat/long) AFTER selection IDs are created
         this.processMarkerData(dataView);
 
-        // Process choropleth data from Power BI (geometryString with embedded properties)
-        this.processChoroplethDataFromPowerBI(dataView);
-
         // Data processing complete
       } else {
         this.clearAllData();
         this.showEmptyState();
         return;
       }
-
-      // Update the visual
-      this.updateChoroplethLayer();
 
       // Update markers visibility based on current Power BI filtering
       this.updateMarkersVisibility(this.currentSelection);
@@ -931,98 +1025,6 @@ export class Visual implements IVisual {
     }
   }
 
-  private processChoroplethDataFromPowerBI(dataView: DataView) {
-    this.powerBIChoroplethData = [];
-
-    if (!dataView.table || !dataView.table.columns || !dataView.table.rows) {
-      return;
-    }
-
-    const columns = dataView.table.columns;
-    const values = dataView.table.rows;
-
-    // Find column index for choropleth geometry
-    const geometryColIndex = columns.findIndex(
-      (col) =>
-        col.roles?.choroplethGeometry ||
-        col.displayName === "geometryString" ||
-        col.displayName === "data.geometryString"
-    );
-
-    // Find all choropleth tooltip column indices (separate from marker tooltip)
-    const choroplethTooltipColIndices = columns
-      .map((col, index) => (col.roles?.choroplethTooltip ? index : -1))
-      .filter((index) => index !== -1);
-
-    if (geometryColIndex === -1) {
-      return;
-    }
-
-    if (choroplethTooltipColIndices.length > 0) {
-      // Found choropleth tooltip columns
-    } else {
-      // No choropleth tooltip columns found
-    }
-
-    // Process each row - simple approach
-    values.forEach((row, rowIndex) => {
-      try {
-        const geometryString = String(row[geometryColIndex]);
-
-        if (
-          !geometryString ||
-          geometryString === "null" ||
-          geometryString === "undefined"
-        ) {
-          return; // Skip empty rows
-        }
-
-        // Parse the geometry string
-        let geometryData;
-        try {
-          geometryData = JSON.parse(geometryString);
-        } catch (parseError) {
-          return;
-        }
-
-        if (geometryData && geometryData.type) {
-          // Create choropleth tooltip data map with choropleth tooltip fields only
-          const choroplethTooltipDataMap = new Map<string, any>();
-
-          // Add all choropleth tooltip fields from Power BI
-          choroplethTooltipColIndices.forEach((colIndex) => {
-            const value = row[colIndex];
-            const columnName = columns[colIndex].displayName;
-
-            if (
-              value !== null &&
-              value !== undefined &&
-              value !== "" &&
-              value !== "NA"
-            ) {
-              choroplethTooltipDataMap.set(columnName, value);
-            }
-          });
-
-          const choroplethData: PowerBIChoroplethData = {
-            adminCode: rowIndex, // Simple index-based admin code
-            geometry: geometryData,
-            choroplethValue: 1, // Simple value for red coloring
-            countryName: `Feature ${rowIndex}`,
-            isoCode: "",
-            continent: "",
-            tooltipData: new Map(),
-            choroplethTooltipData: choroplethTooltipDataMap, // Populate with choropleth tooltip fields only
-          };
-
-          this.powerBIChoroplethData.push(choroplethData);
-        }
-      } catch (error) {
-        // Error processing row
-      }
-    });
-  }
-
   private processMarkerData(dataView: DataView) {
     if (!dataView.table || !dataView.table.columns || !dataView.table.rows) {
       return;
@@ -1034,6 +1036,7 @@ export class Visual implements IVisual {
     // Find column indices for marker data
     const latColIndex = columns.findIndex((col) => col.roles?.latitude);
     const lngColIndex = columns.findIndex((col) => col.roles?.longitude);
+    const adminCodeColIndex = columns.findIndex((col) => col.roles?.adminCode);
 
     // Fallback: If roles are not found, try to detect by column names
     let fallbackLatColIndex = -1;
@@ -1112,12 +1115,20 @@ export class Visual implements IVisual {
         const lat = parseFloat(String(row[finalLatColIndex]));
         const lng = parseFloat(String(row[finalLngColIndex]));
 
-        // Create custom marker with orange styling
+        // Log Admin Code for debugging (but don't change marker color)
+        if (adminCodeColIndex >= 0) {
+          const adminCode = row[adminCodeColIndex];
+        }
+
+        // Always use orange color for markers
+        const markerColor = "#F9B112";
+
+        // Create custom marker with dynamic color styling
         const customMarkerIcon = L.divIcon({
           className: "custom-marker",
           html: `
               <svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12.5 0C5.596 0 0 5.596 0 12.5c0 9.375 12.5 28.5 12.5 28.5s12.5-19.125 12.5-28.5C25 5.596 19.404 0 12.5 0z" fill="#F9B112"/>
+                <path d="M12.5 0C5.596 0 0 5.596 0 12.5c0 9.375 12.5 28.5 12.5 28.5s12.5-19.125 12.5-28.5C25 5.596 19.404 0 12.5 0z" fill="${markerColor}"/>
                 <circle cx="12.5" cy="12.5" r="6" fill="white"/>
               </svg>
             `,
@@ -1146,31 +1157,46 @@ export class Visual implements IVisual {
 
           // Handle selection if selection ID exists
           if (this.selectionIds && this.selectionIds[originalRowIndex]) {
-            this.selectionManager
-              .select(this.selectionIds[originalRowIndex])
-              .then((ids: ISelectionId[]) => {
-                this.currentSelection = ids;
-                this.persistentSelection = [...ids];
+            const clickedSelectionId = this.selectionIds[originalRowIndex];
 
-                if (ids.length === 0) {
-                  this.handleMarkerDeselection(originalRowIndex);
-                } else {
+            // Check if this marker is already selected
+            const isCurrentlySelected = this.currentSelection.some((id) => {
+              if (!id || !clickedSelectionId) return false;
+              if (id.getKey && clickedSelectionId.getKey) {
+                return id.getKey() === clickedSelectionId.getKey();
+              }
+              if (id.toString && clickedSelectionId.toString) {
+                return id.toString() === clickedSelectionId.toString();
+              }
+              return id === clickedSelectionId;
+            });
+
+            if (isCurrentlySelected) {
+              // Deselect the marker
+              this.selectionManager
+                .clear()
+                .then(() => {
+                  this.currentSelection = [];
+                  this.persistentSelection = [];
+                  // Show markers in filtered data
+                  this.updateMarkersVisibility([]);
+                })
+                .catch((error) => {
+                  console.error("Error clearing selection:", error);
+                });
+            } else {
+              // Select the marker
+              this.selectionManager
+                .select(clickedSelectionId)
+                .then((ids: ISelectionId[]) => {
+                  this.currentSelection = ids;
+                  this.persistentSelection = [...ids];
                   this.updateMarkersVisibility(ids);
-                }
-              })
-              .catch((error) => {
-                // Fallback: show all markers if selection fails
-                if (this.selectionIds && this.selectionIds.length > 0) {
-                  this.updateMarkersVisibility(this.selectionIds);
-                } else {
-                  // Show all markers without selection
-                  this.markers.forEach((marker) => {
-                    if (!this.markerClusterGroup.hasLayer(marker)) {
-                      this.markerClusterGroup.addLayer(marker);
-                    }
-                  });
-                }
-              });
+                })
+                .catch((error) => {
+                  console.error("Error selecting marker:", error);
+                });
+            }
           } else {
             // No selection ID found for marker
           }
@@ -1183,10 +1209,15 @@ export class Visual implements IVisual {
         this.markers.push(marker);
       });
 
-      // Add cluster group to map if not already added
-      if (!this.map.hasLayer(this.markerClusterGroup)) {
+      // Only add cluster group to map if base map URL is provided
+      const hasBaseMapUrl =
+        this.settings?.mapSettingsCard?.baseMapUrl?.value?.trim() !== "";
+      if (hasBaseMapUrl && !this.map.hasLayer(this.markerClusterGroup)) {
         this.markerClusterGroup.addTo(this.map);
       }
+
+      // Update choropleth layer with current data
+      this.updateChoroplethLayer();
     } else {
       // No valid latitude/longitude columns found for markers
     }
@@ -1211,91 +1242,29 @@ export class Visual implements IVisual {
     });
   }
 
-  private updateChoroplethLayer() {
-    if (!this.choroplethLayer) {
-      return;
-    }
-
-    // Clear existing choropleth layer
-    this.choroplethLayer.clearLayers();
-
-    if (this.powerBIChoroplethData.length === 0) {
-      return;
-    }
-
-    // Filter choropleth data based on current Power BI data view
-    // Only show choropleth features that correspond to the current filtered data
-    const filteredChoroplethData = this.powerBIChoroplethData.filter(
-      (data, index) => {
-        // Check if this choropleth data corresponds to a row in the current filtered data
-        if (
-          !this.currentDataView ||
-          !this.currentDataView.table ||
-          !this.currentDataView.table.rows
-        ) {
-          return true; // No filtering, show all
-        }
-
-        // If the index is within the current filtered data range, show it
-        return index < this.currentDataView.table.rows.length;
-      }
-    );
-
-    // Create GeoJSON features from filtered Power BI data
-    const features = filteredChoroplethData.map((data) => {
-      const feature = {
-        type: "Feature" as const,
-        properties: {
-          adminCode: data.adminCode,
-          choropleth_value: data.choroplethValue,
-          name: data.countryName,
-          isoCode: data.isoCode,
-          continent: data.continent,
-          tooltipData: data.tooltipData,
-          choroplethTooltipData: data.choroplethTooltipData, // Add Power BI choropleth tooltip data
-        },
-        geometry: data.geometry,
-      };
-
-      return feature;
-    });
-
-    const geoJsonData = {
-      type: "FeatureCollection" as const,
-      features: features,
-    };
-
-    // Add data to choropleth layer
-    this.choroplethLayer.addData(geoJsonData);
-
-    // Add to map if not already added
-    if (!this.map.hasLayer(this.choroplethLayer)) {
-      this.choroplethLayer.addTo(this.map);
-    }
-
-    // Don't fit bounds - keep our desired zoom level 2
-    // This prevents the jarring zoom-in-then-zoom-out effect
-  }
-
   private clearAllData() {
+    // Clear all loading operations and hide loader
+    this.loadingOperations.clear();
+    if (this.loaderDiv) {
+      this.loaderDiv.style.display = "none";
+      this.isLoading = false;
+    }
+
     // Clear markers
     this.markers.forEach((marker) => {
       this.markerClusterGroup.removeLayer(marker);
     });
     this.markers = [];
 
-    // Clear choropleth layer
-    if (this.choroplethLayer) {
-      this.choroplethLayer.clearLayers();
-    }
-
     // Clear selection state
     this.currentSelection = [];
     this.persistentSelection = [];
     this.selectionIds = [];
 
-    // Clear choropleth data
-    this.powerBIChoroplethData = [];
+    // Clear choropleth layer
+    if (this.choroplethLayer) {
+      this.choroplethLayer.clearLayers();
+    }
   }
 
   private updateMarkersVisibility(selectedIds: ISelectionId[]) {
@@ -1327,9 +1296,10 @@ export class Visual implements IVisual {
         return id === markerSelectionId;
       });
 
+      // For manual selection: show only selected markers
       // For Power BI filtering: show markers that are in the filtered data
-      // For cross-filtering: show markers that are explicitly selected
-      const shouldBeVisible = isInFilteredData || isExplicitlySelected;
+      const shouldBeVisible =
+        selectedIds.length > 0 ? isExplicitlySelected : isInFilteredData;
 
       if (shouldBeVisible) {
         // Show marker
@@ -1428,69 +1398,6 @@ export class Visual implements IVisual {
     }
   }
 
-  private buildChoroplethTooltipContent(feature: any): string {
-    const tooltipParts = [];
-
-    // Add basic country info
-    const name =
-      feature.properties?.name ||
-      feature.properties?.countryName ||
-      "Unknown Region";
-
-    // PRIORITY 1: Add all Power BI tooltip fields (same as marker tooltip)
-    if (feature.properties?.choroplethTooltipData) {
-      const choroplethTooltipData = feature.properties.choroplethTooltipData;
-      if (
-        choroplethTooltipData instanceof Map &&
-        choroplethTooltipData.size > 0
-      ) {
-        // Display all tooltip fields from Power BI (same as marker tooltip)
-        choroplethTooltipData.forEach((value, key) => {
-          if (
-            value !== null &&
-            value !== undefined &&
-            value !== "" &&
-            value !== "NA"
-          ) {
-            // Show the actual column name from Power BI (not hardcoded "Choropleth Tooltip")
-            tooltipParts.push(
-              `<div class="tooltip-row"><span class="field-name">${key}</span><span class="field-value">${value}</span></div>`
-            );
-          }
-        });
-
-        // If we have Power BI tooltip data, return it immediately
-        return tooltipParts.join("");
-      }
-    }
-
-    // PRIORITY 2: Add choropleth value if available
-    if (
-      feature.properties?.choropleth_value !== null &&
-      feature.properties?.choropleth_value !== undefined
-    ) {
-      tooltipParts.push(
-        `<div class="tooltip-row"><span class="field-name">Value</span><span class="field-value">${feature.properties.choropleth_value}</span></div>`
-      );
-    }
-
-    // PRIORITY 3: Add legacy tooltip data from custom.geo.json (fallback only)
-    if (feature.properties?.tooltipData) {
-      const tooltipData = feature.properties.tooltipData;
-      if (tooltipData instanceof Map && tooltipData.size > 0) {
-        tooltipData.forEach((value, key) => {
-          if (value !== null && value !== undefined && value !== "NA") {
-            tooltipParts.push(
-              `<div class="tooltip-row"><span class="field-name">${key}</span><span class="field-value">${value}</span></div>`
-            );
-          }
-        });
-      }
-    }
-
-    return tooltipParts.join("");
-  }
-
   private buildMarkerTooltipContent(row: any[], columns: any[]): string {
     const tooltipParts = [];
 
@@ -1554,6 +1461,22 @@ export class Visual implements IVisual {
     }
   }
 
+  private showLoader(operation: string = "default"): void {
+    this.loadingOperations.add(operation);
+    if (this.loaderDiv) {
+      this.loaderDiv.style.display = "block";
+      this.isLoading = true;
+    }
+  }
+
+  private hideLoader(operation: string = "default"): void {
+    this.loadingOperations.delete(operation);
+    if (this.loaderDiv && this.loadingOperations.size === 0) {
+      this.loaderDiv.style.display = "none";
+      this.isLoading = false;
+    }
+  }
+
   private performEmptyStateCheck(): void {
     setTimeout(() => {
       try {
@@ -1561,38 +1484,40 @@ export class Visual implements IVisual {
         const hasAnyData = this.hasAnyDistributionData();
         const hasBaseMapUrl =
           this.settings?.mapSettingsCard?.baseMapUrl?.value?.trim() !== "";
+        const hasOriginalData = this.selectionIds.length > 0;
 
-        // Only show empty state if there's no data AND no base map URL
-        if (hasAnyData || hasBaseMapUrl) {
-          this.hideEmptyState();
+        // Always show message until URL is provided, regardless of data
+        if (!hasBaseMapUrl) {
+          // Show appropriate message based on whether data is present
+          if (hasOriginalData) {
+            this.showUrlRequiredMessage();
+          } else {
+            this.showBaseMapMessage();
+          }
         } else {
-          this.showEmptyState();
+          // URL is provided, check if we should show empty state
+          if (hasOriginalData && !hasAnyData) {
+            // We have original data but no visible data (filtered out)
+            this.showNoDataMessage();
+          } else {
+            // Hide empty state (map will be shown)
+            this.hideEmptyState();
+          }
         }
       } catch (error) {
-        this.showEmptyState();
+        this.showBaseMapMessage();
       }
     }, 100);
   }
 
   private hasAnyDistributionData(): boolean {
     try {
-      const totalMarkers = this.markers.length;
       const visibleMarkers = this.markers.filter((marker) =>
         this.markerClusterGroup.hasLayer(marker)
       ).length;
-      const hasOriginalData = this.selectionIds.length > 0;
-      const hasChoroplethData = this.powerBIChoroplethData.length > 0;
 
-      // Check if there's actually visible data on the map
-      const hasVisibleData = visibleMarkers > 0 || hasChoroplethData;
-
-      // Also check if there's data available but just filtered out
-      const hasDataAvailable = totalMarkers > 0 || hasChoroplethData;
-
-      const result =
-        hasVisibleData || (hasDataAvailable && !this.currentSelection?.length);
-
-      return result;
+      // Only return true if there are actually visible markers on the map
+      return visibleMarkers > 0;
     } catch (error) {
       return false;
     }
@@ -1626,30 +1551,19 @@ export class Visual implements IVisual {
 
   private handleMarkerDeselection(clickedMarkerIndex: number): void {
     try {
-      // Safety check for selection IDs
-      if (this.selectionIds && this.selectionIds.length > 0) {
-        this.updateMarkersVisibility(this.selectionIds);
-      } else {
-        // Show all markers without selection
-        this.markers.forEach((marker) => {
-          if (!this.markerClusterGroup.hasLayer(marker)) {
-            this.markerClusterGroup.addLayer(marker);
-          }
-        });
-      }
+      // When deselecting, show markers that are in the current Power BI filtered data
+      // This respects Power BI filters while clearing manual selections
+      this.updateMarkersVisibility([]);
     } catch (error) {
-      // Fallback: show all markers
-      this.markers.forEach((marker) => {
-        if (!this.markerClusterGroup.hasLayer(marker)) {
-          this.markerClusterGroup.addLayer(marker);
-        }
-      });
+      // Fallback: show markers in filtered data
+      this.updateMarkersVisibility([]);
     }
   }
 
   private showOnlyCurrentContextMarkers(): void {
     try {
-      this.updateMarkersVisibility(this.selectionIds);
+      // Show markers that are in the current Power BI filtered data
+      this.updateMarkersVisibility([]);
     } catch (error) {
       // Error showing current context markers
     }
@@ -1692,16 +1606,34 @@ export class Visual implements IVisual {
     const objectEnumeration: powerbiVisualsApi.VisualObjectInstance[] = [];
 
     if (objectName === "mapSettings") {
+      // Always return the current value, even if empty
+      const currentUrl =
+        this.settings?.mapSettingsCard?.baseMapUrl?.value || "";
+      // Try to get the URL from a different source if the settings object is empty
+      let finalUrl = currentUrl;
+      if (!finalUrl && (this as any).lastBaseMapUrl) {
+        finalUrl = (this as any).lastBaseMapUrl;
+      }
+
       objectEnumeration.push({
         objectName: objectName,
         properties: {
-          baseMapUrl: this.settings.mapSettingsCard.baseMapUrl.value || "",
+          baseMapUrl: finalUrl,
         },
         selector: null,
       });
     }
 
     return objectEnumeration;
+  }
+
+  // Override the parse method to handle settings changes
+  public parseSettings(settings: any) {
+    if (settings && settings.mapSettings && settings.mapSettings.baseMapUrl) {
+      const url = String(settings.mapSettings.baseMapUrl);
+      this.settings.mapSettingsCard.baseMapUrl.value = url;
+      this.handleBaseMapUrlChange();
+    }
   }
 
   public destroy(): void {
@@ -1711,7 +1643,6 @@ export class Visual implements IVisual {
       }
       this.markers = [];
       this.selectionIds = [];
-      this.powerBIChoroplethData = [];
       this.currentSelection = [];
       this.persistentSelection = [];
     } catch (error) {
