@@ -38,6 +38,8 @@ export class Visual implements IVisual {
   private choroplethLayer: L.GeoJSON<any> | null = null; // Choropleth layer for highlighting matching regions
   private isLoading: boolean = false;
   private loadingOperations: Set<string> = new Set();
+  private cachedAdminCodes: string[] = []; // Cache admin codes to avoid repeated processing
+  private mapLoaded: boolean = false; // Track if map is fully loaded
 
   constructor(options: VisualConstructorOptions) {
     this.target = options.element;
@@ -152,7 +154,7 @@ export class Visual implements IVisual {
       zoomControl: false,
       attributionControl: false,
       worldCopyJump: true,
-      maxZoom: 20,
+      maxZoom: 5,
       minZoom: 1,
     }).setView([20, 0], 2);
 
@@ -225,7 +227,7 @@ export class Visual implements IVisual {
 
     // Add cluster event handlers
     this.markerClusterGroup.on("clusterclick", (e) => {
-      // You can add custom cluster click behavior here
+      this.handleClusterClick(e);
     });
 
     this.markerClusterGroup.on("animationend", () => {
@@ -401,6 +403,161 @@ export class Visual implements IVisual {
     }
   }
 
+  // Handle cluster click event
+  private handleClusterClick(e: any) {
+    const cluster = e.layer;
+    const currentZoom = this.map.getZoom();
+    const maxZoom = this.map.getMaxZoom();
+
+    // Check if zooming to bounds would exceed max zoom
+    if (currentZoom >= maxZoom) {
+      // Get all child markers from the cluster
+      const childMarkers = cluster.getAllChildMarkers();
+
+      if (childMarkers.length > 0) {
+        // Group markers by country and count ObsIDs
+        const countryData = this.groupMarkersByCountry(childMarkers);
+
+        // Create and show tooltip
+        const tooltipContent = this.buildClusterTooltipContent(countryData);
+        this.showTooltip(tooltipContent, e.latlng);
+
+        // Prevent default cluster behavior
+        e.originalEvent.preventDefault();
+        e.originalEvent.stopPropagation();
+      }
+    }
+  }
+
+  // Group markers by country using adminCode data
+  private groupMarkersByCountry(
+    markers: L.Marker[]
+  ): Map<string, { countryName: string; obsIds: string[] }> {
+    const countryMap = new Map<
+      string,
+      { countryName: string; obsIds: string[] }
+    >();
+
+    if (
+      !this.currentDataView?.table?.columns ||
+      !this.currentDataView?.table?.rows
+    ) {
+      return countryMap;
+    }
+
+    const columns = this.currentDataView.table.columns;
+    const adminCodeColIndex = columns.findIndex((col) => col.roles?.adminCode);
+    const tooltipColIndex = columns.findIndex((col) => col.roles?.tooltip);
+
+    if (adminCodeColIndex === -1) {
+      return countryMap;
+    }
+
+    // Get the original row data for each marker
+    markers.forEach((marker) => {
+      const markerIndex = this.markers.indexOf(marker);
+
+      if (
+        markerIndex >= 0 &&
+        markerIndex < this.currentDataView.table.rows.length
+      ) {
+        const row = this.currentDataView.table.rows[markerIndex];
+
+        const adminCode = String(row[adminCodeColIndex]);
+
+        // Get country name from GeoJSON features
+        const countryName = this.getCountryNameFromAdminCode(adminCode);
+
+        // Get ObsID value from tooltip field
+        let obsIdValue = null;
+        if (tooltipColIndex >= 0) {
+          const tooltipValue = row[tooltipColIndex];
+          if (
+            tooltipValue !== null &&
+            tooltipValue !== undefined &&
+            tooltipValue !== ""
+          ) {
+            obsIdValue = String(tooltipValue);
+          }
+        } else {
+        }
+
+        if (countryMap.has(adminCode)) {
+          // Always add the marker, even if no ObsID value
+          if (obsIdValue) {
+            countryMap.get(adminCode)!.obsIds.push(obsIdValue);
+          } else {
+            // Add a placeholder for markers without ObsID data
+            countryMap.get(adminCode)!.obsIds.push(`Marker ${markerIndex + 1}`);
+          }
+        } else {
+          countryMap.set(adminCode, {
+            countryName: countryName || `Country ${adminCode}`,
+            obsIds: obsIdValue ? [obsIdValue] : [`Marker ${markerIndex + 1}`],
+          });
+        }
+      } else {
+      }
+    });
+
+    return countryMap;
+  }
+
+  // Get country name from admin code using GeoJSON features
+  private getCountryNameFromAdminCode(adminCode: string): string | null {
+    if (!this.geoJsonFeatures || this.geoJsonFeatures.length === 0) {
+      return null;
+    }
+
+    const feature = this.geoJsonFeatures.find((feature) => {
+      const gaulCode = feature.properties?.gaul_code;
+      return gaulCode && String(gaulCode) === adminCode;
+    });
+
+    if (feature) {
+      return (
+        feature.properties?.gaul0_name ||
+        feature.properties?.disp_en ||
+        feature.properties?.name ||
+        null
+      );
+    }
+
+    return null;
+  }
+
+  // Build cluster tooltip content
+  private buildClusterTooltipContent(
+    countryData: Map<string, { countryName: string; obsIds: string[] }>
+  ): string {
+    if (countryData.size === 0) {
+      return '<div class="tooltip-row"><span class="field-name">No data available</span></div>';
+    }
+
+    const tooltipParts = [];
+
+    // Show each country with its ObsID information
+    countryData.forEach((data, adminCode) => {
+      tooltipParts.push(
+        `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${data.countryName}</span></div>`
+      );
+
+      if (data.obsIds.length === 1) {
+        // Show actual ObsID when count is 1
+        tooltipParts.push(
+          `<div class="tooltip-row"><span class="field-name">Obs</span><span class="field-value">${data.obsIds[0]}</span></div>`
+        );
+      } else {
+        // Show count when more than 1
+        tooltipParts.push(
+          `<div class="tooltip-row"><span class="field-name">Obs Count</span><span class="field-value">${data.obsIds.length}</span></div>`
+        );
+      }
+    });
+
+    return tooltipParts.join("");
+  }
+
   // Override zoom controls to respect our desired zoom level
   private setupZoomControls() {
     if (this.map) {
@@ -414,10 +571,10 @@ export class Visual implements IVisual {
         if (zoomInButton) {
           zoomInButton.addEventListener("click", (e) => {
             const currentZoom = this.map.getZoom();
-            if (currentZoom >= 2) {
-              // If we're at or above zoom level 2, reset to 2
+            if (currentZoom >= 5) {
+              // If we're at or above zoom level 5, reset to 5
               setTimeout(() => {
-                this.map.setZoom(2);
+                this.map.setZoom(5);
               }, 100);
             }
           });
@@ -436,6 +593,9 @@ export class Visual implements IVisual {
       // Add to base map layer
       this.baseMapLayer.addData(geoData);
       this.map.addLayer(this.baseMapLayer);
+
+      // Mark map as loaded
+      this.mapLoaded = true;
 
       // Don't fit bounds - keep our desired zoom level 2
       // This prevents the jarring zoom-in-then-zoom-out effect
@@ -489,16 +649,18 @@ export class Visual implements IVisual {
       // Store GeoJSON features for gaul_code lookup
       this.geoJsonFeatures = geoData.features;
 
-      // Update choropleth layer with the loaded features
-      this.updateChoroplethLayer();
-
       // Add to base map layer
       this.baseMapLayer.addData(geoData);
       this.map.addLayer(this.baseMapLayer);
 
+      // Mark map as loaded
+      this.mapLoaded = true;
+
+      // Force choropleth layer update when both GeoJSON and data are ready
+      this.forceChoroplethUpdate();
+
       this.hideLoader("baseMap");
     } catch (error) {
-      console.error("Error loading base map from URL:", error);
       this.hideLoader("baseMap");
       this.showUrlErrorMessage(url, error.message);
     }
@@ -695,7 +857,8 @@ export class Visual implements IVisual {
 
   // Choropleth feature handler
   private onEachChoroplethFeature(feature: any, layer: L.Layer): void {
-    const adminCodes = this.getAdminCodesFromData();
+    // Use cached admin codes instead of calling getAdminCodesFromData repeatedly
+    const adminCodes = this.cachedAdminCodes;
     const gaulCode = feature.properties?.gaul0_code;
     const isMatch = adminCodes.includes(String(gaulCode));
 
@@ -719,8 +882,13 @@ export class Visual implements IVisual {
     }
   }
 
-  // Get all Admin Codes from current data
+  // Get all Admin Codes from current data (with caching)
   private getAdminCodesFromData(): string[] {
+    // Return cached admin codes if available
+    if (this.cachedAdminCodes.length > 0) {
+      return this.cachedAdminCodes;
+    }
+
     if (
       !this.currentDataView?.table?.columns ||
       !this.currentDataView?.table?.rows
@@ -739,6 +907,8 @@ export class Visual implements IVisual {
       .map((row) => String(row[adminCodeColIndex]))
       .filter((code) => code && code !== "undefined" && code !== "null");
 
+    // Cache the admin codes
+    this.cachedAdminCodes = adminCodes;
     return adminCodes;
   }
 
@@ -775,7 +945,7 @@ export class Visual implements IVisual {
     return null;
   }
 
-  // Build choropleth tooltip content using same format as marker tooltips
+  // Build choropleth tooltip content using same format as cluster tooltips
   private buildChoroplethTooltipContent(gaulCode: any): string {
     if (
       !this.currentDataView?.table?.columns ||
@@ -786,11 +956,9 @@ export class Visual implements IVisual {
 
     const columns = this.currentDataView.table.columns;
     const adminCodeColIndex = columns.findIndex((col) => col.roles?.adminCode);
-    const choroplethTooltipColIndex = columns.findIndex(
-      (col) => col.roles?.choroplethTooltip
-    );
+    const tooltipColIndex = columns.findIndex((col) => col.roles?.tooltip);
 
-    if (adminCodeColIndex === -1 || choroplethTooltipColIndex === -1) {
+    if (adminCodeColIndex === -1) {
       return `Matched Region (Code: ${gaulCode})`;
     }
 
@@ -804,44 +972,43 @@ export class Visual implements IVisual {
       return `Matched Region (Code: ${gaulCode})`;
     }
 
-    const tooltipParts = [];
+    // Get country name from GeoJSON features
+    const countryName = this.getCountryNameFromAdminCode(String(gaulCode));
 
-    // Add all choropleth tooltip data from matching rows
-    matchingRows.forEach((row, index) => {
-      // Find all tooltip-related column indices
-      const tooltipColIndices = columns
-        .map((col, colIndex) => (col.roles?.tooltip ? colIndex : -1))
-        .filter((colIndex) => colIndex !== -1);
-
-      // Add all tooltip fields from Power BI tooltip fields
-      if (tooltipColIndices.length > 0) {
-        tooltipColIndices.forEach((colIndex) => {
-          const value = row[colIndex];
-          const columnName = columns[colIndex].displayName;
-
-          if (
-            value !== null &&
-            value !== undefined &&
-            value !== "" &&
-            value !== "NA"
-          ) {
-            const displayName =
-              matchingRows.length > 1
-                ? `${columnName} ${index + 1}`
-                : columnName;
-
-            tooltipParts.push(
-              `<div class="tooltip-row"><span class="field-name">${displayName}</span><span class="field-value">${value}</span></div>`
-            );
-          }
-        });
+    // Collect all ObsIDs for this country
+    const obsIds: string[] = [];
+    matchingRows.forEach((row) => {
+      if (tooltipColIndex >= 0) {
+        const tooltipValue = row[tooltipColIndex];
+        if (
+          tooltipValue !== null &&
+          tooltipValue !== undefined &&
+          tooltipValue !== ""
+        ) {
+          obsIds.push(String(tooltipValue));
+        }
       }
     });
 
-    // If no choropleth tooltip data found, show region info as fallback
-    if (tooltipParts.length === 0) {
+    const tooltipParts = [];
+
+    // Add country information
+    tooltipParts.push(
+      `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${
+        countryName || `Country ${gaulCode}`
+      }</span></div>`
+    );
+
+    // Add ObsID information
+    if (obsIds.length === 1) {
+      // Show actual ObsID when count is 1
       tooltipParts.push(
-        `<div class="tooltip-row"><span class="field-name">Region Code</span><span class="field-value">${gaulCode}</span></div>`
+        `<div class="tooltip-row"><span class="field-name">Obs</span><span class="field-value">${obsIds[0]}</span></div>`
+      );
+    } else {
+      // Show count when more than 1
+      tooltipParts.push(
+        `<div class="tooltip-row"><span class="field-name">Obs Count</span><span class="field-value">${obsIds.length}</span></div>`
       );
     }
 
@@ -850,7 +1017,19 @@ export class Visual implements IVisual {
 
   // Update choropleth layer with current data
   private updateChoroplethLayer(): void {
-    if (!this.choroplethLayer || this.geoJsonFeatures.length === 0) {
+    if (!this.choroplethLayer) {
+      return;
+    }
+
+    if (this.geoJsonFeatures.length === 0) {
+      return;
+    }
+
+    // Check if we have data to process
+    if (
+      !this.currentDataView?.table?.rows ||
+      this.currentDataView.table.rows.length === 0
+    ) {
       return;
     }
 
@@ -860,13 +1039,8 @@ export class Visual implements IVisual {
     // Clear existing choropleth data
     this.choroplethLayer.clearLayers();
 
-    // Get Admin Codes from current data
+    // Get Admin Codes from current data (with caching)
     const adminCodes = this.getAdminCodesFromData();
-
-    // Debug: Show all available gaul_code values in GeoJSON
-    const allGaulCodes = this.geoJsonFeatures
-      .map((feature) => feature.properties?.gaul_code)
-      .filter((code) => code !== undefined);
 
     // Find matching features and create choropleth polygons
     const matchingFeatures = this.geoJsonFeatures.filter((feature) => {
@@ -898,6 +1072,19 @@ export class Visual implements IVisual {
 
     // Hide loader after choropleth processing is complete
     this.hideLoader("choropleth");
+  }
+
+  // Force choropleth layer update when both GeoJSON and data are ready
+  private forceChoroplethUpdate(): void {
+    if (
+      this.mapLoaded &&
+      this.choroplethLayer &&
+      this.geoJsonFeatures.length > 0 &&
+      this.currentDataView?.table?.rows &&
+      this.currentDataView.table.rows.length > 0
+    ) {
+      this.updateChoroplethLayer();
+    }
   }
 
   // Add a method to force URL reload (can be called externally if needed)
@@ -1029,6 +1216,9 @@ export class Visual implements IVisual {
     if (!dataView.table || !dataView.table.columns || !dataView.table.rows) {
       return;
     }
+
+    // Clear cached admin codes when processing new data
+    this.cachedAdminCodes = [];
 
     const columns = dataView.table.columns;
     const values = dataView.table.rows;
@@ -1182,7 +1372,7 @@ export class Visual implements IVisual {
                   this.updateMarkersVisibility([]);
                 })
                 .catch((error) => {
-                  console.error("Error clearing selection:", error);
+                  // Error clearing selection
                 });
             } else {
               // Select the marker
@@ -1194,7 +1384,7 @@ export class Visual implements IVisual {
                   this.updateMarkersVisibility(ids);
                 })
                 .catch((error) => {
-                  console.error("Error selecting marker:", error);
+                  // Error selecting marker
                 });
             }
           } else {
@@ -1216,8 +1406,8 @@ export class Visual implements IVisual {
         this.markerClusterGroup.addTo(this.map);
       }
 
-      // Update choropleth layer with current data
-      this.updateChoroplethLayer();
+      // Force choropleth layer update when both GeoJSON and data are ready
+      this.forceChoroplethUpdate();
     } else {
       // No valid latitude/longitude columns found for markers
     }
@@ -1265,6 +1455,12 @@ export class Visual implements IVisual {
     if (this.choroplethLayer) {
       this.choroplethLayer.clearLayers();
     }
+
+    // Clear cached admin codes
+    this.cachedAdminCodes = [];
+
+    // Reset map loaded flag
+    this.mapLoaded = false;
   }
 
   private updateMarkersVisibility(selectedIds: ISelectionId[]) {
