@@ -89,9 +89,20 @@ class MapSettingsCard extends FormattingSettingsCard {
     placeholder: "https://example.com/map.geojson",
   });
 
+  disputedBordersUrl = new formattingSettings.TextInput({
+    name: "disputedBordersUrl",
+    displayName: "Disputed Borders GeoJSON URL",
+    description: "Public URL to load disputed borders GeoJSON data from",
+    value: "",
+    placeholder: "https://example.com/disputed-borders.geojson",
+  });
+
   name: string = "mapSettings";
   displayName: string = "Map Settings";
-  slices: Array<FormattingSettingsSlice> = [this.baseMapUrl];
+  slices: Array<FormattingSettingsSlice> = [
+    this.baseMapUrl,
+    this.disputedBordersUrl,
+  ];
 }
 
 /**

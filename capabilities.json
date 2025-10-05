@@ -76,6 +76,13 @@
           "type": {
             "text": true
           }
+        },
+        "disputedBordersUrl": {
+          "displayName": "Disputed Borders GeoJSON URL",
+          "description": "Public URL to load disputed borders GeoJSON data from",
+          "type": {
+            "text": true
+          }
         }
       }
     }

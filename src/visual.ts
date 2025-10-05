@@ -12,8 +12,6 @@ import VisualUpdateOptions = powerbiVisualsApi.extensibility.visual.VisualUpdate
 import DataView = powerbiVisualsApi.DataView;
 import ISelectionManager = powerbiVisualsApi.extensibility.ISelectionManager;
 import ISelectionId = powerbiVisualsApi.visuals.ISelectionId;
-import markerIcon from "leaflet/dist/images/marker-icon.png";
-import { disputedBorders } from "./disputed-borders";
 import customGeoJSON from "./custom.geo.json";
 import { VisualFormattingSettingsModel } from "./settings";
 
@@ -231,7 +229,8 @@ export class Visual implements IVisual {
     });
 
     this.markerClusterGroup.on("animationend", () => {
-      // Cluster animation completed
+      // Re-apply cluster opacity after clustering animations
+      this.updateClusterOpacity(this.currentSelection || []);
     });
 
     // Hide Leaflet attribution and any flags
@@ -364,8 +363,7 @@ export class Visual implements IVisual {
     `;
     document.head.appendChild(style);
 
-    // Load disputed borders (base map will be loaded when settings are available)
-    this.loadDisputedBorders();
+    // Disputed borders will be loaded from URL if provided in settings
 
     // Setup custom zoom controls
     this.setupZoomControls();
@@ -597,6 +595,11 @@ export class Visual implements IVisual {
       // Mark map as loaded
       this.mapLoaded = true;
 
+      // Load disputed borders from URL only after map is fully loaded
+      setTimeout(() => {
+        this.handleDisputedBordersUrlChange();
+      }, 100);
+
       // Don't fit bounds - keep our desired zoom level 2
       // This prevents the jarring zoom-in-then-zoom-out effect
 
@@ -630,6 +633,81 @@ export class Visual implements IVisual {
     }
   }
 
+  private async loadDisputedBordersFromUrl(url: string) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const geoData = await response.json();
+
+      if (!geoData.type || !geoData.features) {
+        throw new Error("Invalid GeoJSON format - missing type or features");
+      }
+
+      if (this.disputedBordersLayer) {
+        this.disputedBordersLayer.clearLayers();
+      }
+
+      this.disputedBordersLayer.addData(geoData as any);
+
+      if (!this.map.hasLayer(this.disputedBordersLayer)) {
+        this.disputedBordersLayer.addTo(this.map);
+      }
+    } catch (error) {
+      // If URL fails, just clear the layer and don't show anything
+      if (this.disputedBordersLayer) {
+        this.disputedBordersLayer.clearLayers();
+        if (this.map.hasLayer(this.disputedBordersLayer)) {
+          this.map.removeLayer(this.disputedBordersLayer);
+        }
+      }
+    }
+  }
+
+  private handleDisputedBordersUrlChange() {
+    // Only proceed if map is fully loaded
+    if (!this.mapLoaded) {
+      return;
+    }
+
+    const currentUrl =
+      this.settings?.mapSettingsCard?.disputedBordersUrl?.value;
+
+    if (!(this as any).lastDisputedBordersUrl) {
+      (this as any).lastDisputedBordersUrl = currentUrl || "";
+      if (currentUrl && currentUrl.trim() !== "") {
+        this.loadDisputedBordersFromUrl(currentUrl);
+      } else {
+        // Clear layer if no URL provided
+        if (this.disputedBordersLayer) {
+          this.disputedBordersLayer.clearLayers();
+          if (this.map.hasLayer(this.disputedBordersLayer)) {
+            this.map.removeLayer(this.disputedBordersLayer);
+          }
+        }
+      }
+      return;
+    }
+    if ((this as any).lastDisputedBordersUrl !== (currentUrl || "")) {
+      (this as any).lastDisputedBordersUrl = currentUrl || "";
+      if (this.disputedBordersLayer) {
+        this.disputedBordersLayer.clearLayers();
+      }
+      if (currentUrl && currentUrl.trim() !== "") {
+        this.loadDisputedBordersFromUrl(currentUrl);
+      } else {
+        // Clear layer if no URL provided
+        if (this.disputedBordersLayer) {
+          this.disputedBordersLayer.clearLayers();
+          if (this.map.hasLayer(this.disputedBordersLayer)) {
+            this.map.removeLayer(this.disputedBordersLayer);
+          }
+        }
+      }
+    }
+  }
+
   private async loadMapDataFromUrl(url: string) {
     try {
       this.showLoader("baseMap");
@@ -656,6 +734,11 @@ export class Visual implements IVisual {
       // Mark map as loaded
       this.mapLoaded = true;
 
+      // Load disputed borders from URL only after map is fully loaded
+      setTimeout(() => {
+        this.handleDisputedBordersUrlChange();
+      }, 100);
+
       // Force choropleth layer update when both GeoJSON and data are ready
       this.forceChoroplethUpdate();
 
@@ -671,22 +754,32 @@ export class Visual implements IVisual {
     const dataView = options.dataViews[0];
 
     if (dataView && dataView.metadata && dataView.metadata.objects) {
-      const mapSettings = dataView.metadata.objects.mapSettings;
+      const mapSettings = dataView.metadata.objects.mapSettings as any;
 
       if (mapSettings) {
-        // Always update the setting, even if it's empty
-        const newUrl = mapSettings.baseMapUrl
+        // Base map URL
+        const newBaseUrl = mapSettings.baseMapUrl
           ? String(mapSettings.baseMapUrl)
           : "";
-        const currentUrl = this.settings.mapSettingsCard.baseMapUrl.value;
-
-        this.settings.mapSettingsCard.baseMapUrl.value = newUrl;
-
-        // If URL changed, trigger immediate reload
-        if (currentUrl !== newUrl) {
+        const currentBaseUrl = this.settings.mapSettingsCard.baseMapUrl.value;
+        this.settings.mapSettingsCard.baseMapUrl.value = newBaseUrl;
+        if (currentBaseUrl !== newBaseUrl) {
           setTimeout(() => {
             this.handleBaseMapUrlChange();
-          }, 50); // Reduced timeout from 100ms to 50ms
+          }, 50);
+        }
+
+        // Disputed borders URL
+        const newDisputedUrl = mapSettings.disputedBordersUrl
+          ? String(mapSettings.disputedBordersUrl)
+          : "";
+        const currentDisputedUrl =
+          this.settings.mapSettingsCard.disputedBordersUrl?.value || "";
+        this.settings.mapSettingsCard.disputedBordersUrl.value = newDisputedUrl;
+        if (currentDisputedUrl !== newDisputedUrl) {
+          setTimeout(() => {
+            this.handleDisputedBordersUrlChange();
+          }, 50);
         }
       }
     }
@@ -1492,10 +1585,10 @@ export class Visual implements IVisual {
         return id === markerSelectionId;
       });
 
-      // For manual selection: show only selected markers
+      // For manual selection: show all markers but dim non-selected ones
       // For Power BI filtering: show markers that are in the filtered data
       const shouldBeVisible =
-        selectedIds.length > 0 ? isExplicitlySelected : isInFilteredData;
+        selectedIds.length > 0 ? isInFilteredData : isInFilteredData;
 
       if (shouldBeVisible) {
         // Show marker
@@ -1505,8 +1598,24 @@ export class Visual implements IVisual {
         } else {
           visibleMarkers++;
         }
+
+        // Apply opacity based on selection
+        if (selectedIds.length > 0) {
+          // If there are selections, dim non-selected markers
+          const isSelected = isExplicitlySelected;
+          const markerElement = marker.getElement();
+          if (markerElement) {
+            markerElement.style.opacity = isSelected ? "1" : "0.5";
+          }
+        } else {
+          // No selections, show all markers at full opacity
+          const markerElement = marker.getElement();
+          if (markerElement) {
+            markerElement.style.opacity = "1";
+          }
+        }
       } else {
-        // Hide marker
+        // Hide marker (not in filtered data)
         if (this.markerClusterGroup.hasLayer(marker)) {
           this.markerClusterGroup.removeLayer(marker);
           hiddenMarkers++;
@@ -1514,8 +1623,48 @@ export class Visual implements IVisual {
       }
     });
 
+    // Update cluster opacity based on selection
+    this.updateClusterOpacity(selectedIds);
+
     // Check empty state after marker visibility update
     this.performEmptyStateCheck();
+  }
+
+  private updateClusterOpacity(selectedIds: ISelectionId[]) {
+    // Use a timeout to ensure clusters are rendered before updating opacity
+    setTimeout(() => {
+      const clusterElements = document.querySelectorAll(
+        ".marker-cluster-small, .marker-cluster-medium, .marker-cluster-large"
+      );
+
+      clusterElements.forEach((clusterElement) => {
+        // Access the Leaflet layer via DOM traversal is not reliable; instead, approximate by checking child markers' selection
+        // We'll compute based on bounds overlap with selected markers' layers present in the cluster group
+        // Simpler approach: if any visible selected marker exists, dim clusters that don't contain selected markers
+
+        if (selectedIds.length === 0) {
+          (clusterElement as HTMLElement).style.opacity = "1";
+          return;
+        }
+
+        // Determine if this cluster contains any selected marker by probing nearby markers via DOM ancestors
+        // Fallback heuristic: if any selected marker element exists inside this cluster element
+        const markerChildren = clusterElement.querySelectorAll(
+          ".leaflet-marker-icon"
+        );
+        let hasSelected = false;
+        markerChildren.forEach((el) => {
+          const opacity = (el as HTMLElement).style.opacity;
+          if (opacity === "1") {
+            hasSelected = true;
+          }
+        });
+
+        (clusterElement as HTMLElement).style.opacity = hasSelected
+          ? "1"
+          : "0.5";
+      });
+    }, 100);
   }
 
   private isMarkerInFilteredData(markerSelectionId: ISelectionId): boolean {
@@ -1802,19 +1951,32 @@ export class Visual implements IVisual {
     const objectEnumeration: powerbiVisualsApi.VisualObjectInstance[] = [];
 
     if (objectName === "mapSettings") {
-      // Always return the current value, even if empty
+      // Base map URL enumeration
       const currentUrl =
         this.settings?.mapSettingsCard?.baseMapUrl?.value || "";
-      // Try to get the URL from a different source if the settings object is empty
       let finalUrl = currentUrl;
       if (!finalUrl && (this as any).lastBaseMapUrl) {
         finalUrl = (this as any).lastBaseMapUrl;
       }
-
       objectEnumeration.push({
         objectName: objectName,
         properties: {
           baseMapUrl: finalUrl,
+        },
+        selector: null,
+      });
+
+      // Disputed borders URL enumeration
+      const currentDisputed =
+        this.settings?.mapSettingsCard?.disputedBordersUrl?.value || "";
+      let finalDisputed = currentDisputed;
+      if (!finalDisputed && (this as any).lastDisputedBordersUrl) {
+        finalDisputed = (this as any).lastDisputedBordersUrl;
+      }
+      objectEnumeration.push({
+        objectName: objectName,
+        properties: {
+          disputedBordersUrl: finalDisputed,
         },
         selector: null,
       });
@@ -1873,23 +2035,5 @@ export class Visual implements IVisual {
 
   private onEachDisputedBorderFeature(feature: any, layer: L.Layer) {
     // No click events for disputed borders - they are visual indicators only
-  }
-
-  private loadDisputedBorders() {
-    try {
-      const bordersData = disputedBorders;
-
-      if (this.disputedBordersLayer) {
-        this.disputedBordersLayer.clearLayers();
-      }
-
-      this.disputedBordersLayer.addData(bordersData as any);
-
-      if (!this.map.hasLayer(this.disputedBordersLayer)) {
-        this.disputedBordersLayer.addTo(this.map);
-      }
-    } catch (error) {
-      // Error loading disputed borders
-    }
   }
 }
