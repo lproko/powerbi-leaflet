@@ -38,6 +38,8 @@ export class Visual implements IVisual {
   private loadingOperations: Set<string> = new Set();
   private cachedAdminCodes: string[] = []; // Cache admin codes to avoid repeated processing
   private mapLoaded: boolean = false; // Track if map is fully loaded
+  private debugLocationLogCount: number = 0; // Limit noisy debug logs
+  private debugLocationValueLogCount: number = 0; // Limit raw value logs
 
   constructor(options: VisualConstructorOptions) {
     this.target = options.element;
@@ -245,13 +247,14 @@ export class Visual implements IVisual {
         justify-content: space-between;
         align-items: center;
         padding: 8px 0;
-        border-bottom: 1px solid #22294B;
         font-family: Arial, sans-serif;
         font-size: 12px;
       }
-      
-      .tooltip-row:last-child {
-        border-bottom: none;
+
+      .tooltip-divider {
+        height: 1px;
+        background-color: #22294B;
+        width: 100%;
       }
       
       .field-name {
@@ -369,6 +372,375 @@ export class Visual implements IVisual {
     this.setupZoomControls();
   }
 
+  // Helper: build tooltip content with optional dividers after odd rows when > 2 rows
+  private buildTooltipWithOddDividers(rows: string[]): string {
+    const parts: string[] = [];
+    const shouldInsertDividers = rows.length > 2;
+    for (let i = 0; i < rows.length; i++) {
+      parts.push(rows[i]);
+      // Insert divider after even-numbered rows (1-based: after rows 2,4,6,...) but not after the last row
+      if (shouldInsertDividers && i % 2 === 1 && i < rows.length - 1) {
+        parts.push('<div class="tooltip-divider"></div>');
+      }
+    }
+    return parts.join("");
+  }
+
+  // Helper: get column index by data role
+  private getColumnIndexByRole(columns: any[], roleName: string): number {
+    return columns.findIndex(
+      (col) => col.roles && (col.roles as any)[roleName]
+    );
+  }
+
+  // Helper: check if marker's Ref ID exists in the Ref ID measure string
+  private isMarkerRefIdInMeasure(
+    markerRefId: any,
+    refIdMeasureString: string
+  ): boolean {
+    if (!markerRefId || !refIdMeasureString) {
+      return true; // If no measure string, show all markers
+    }
+
+    // Convert marker Ref ID to string and trim
+    const markerRefIdStr = String(markerRefId).trim();
+
+    // Split the measure string by comma and check if marker Ref ID exists
+    const refIdList = refIdMeasureString
+      .split(",")
+      .map((id) => String(id).trim());
+
+    return refIdList.includes(markerRefIdStr);
+  }
+
+  // Helper: parse a single location field supporting JSON or delimited strings
+  private parseLocationField(value: any): {
+    latitude?: number;
+    longitude?: number;
+    adminCode?: string;
+    obsId?: string;
+    country?: string;
+    refId?: string;
+  } {
+    if (value === null || value === undefined) return {};
+    const raw = String(value).trim();
+    if (!raw || raw === "NA") return {};
+
+    if (this.debugLocationLogCount < 20) {
+      try {
+      } catch {}
+    }
+
+    // Try JSON first
+    try {
+      const obj = JSON.parse(raw);
+      const lat = parseFloat(
+        String((obj as any).lat ?? (obj as any).latitude ?? (obj as any).y)
+      );
+      const lng = parseFloat(
+        String(
+          (obj as any).lng ??
+            (obj as any).long ??
+            (obj as any).longitude ??
+            (obj as any).x
+        )
+      );
+      const admin =
+        (obj as any).admin ??
+        (obj as any).adminCode ??
+        (obj as any).gaul_code ??
+        (obj as any).code;
+      const obsId =
+        (obj as any).obsId ?? (obj as any).obs_id ?? (obj as any).obs;
+      const country =
+        (obj as any).country ??
+        (obj as any).countryName ??
+        (obj as any).country_name;
+
+      const result: any = {};
+      if (!isNaN(lat)) result.latitude = lat;
+      if (!isNaN(lng)) result.longitude = lng;
+      if (admin !== undefined && admin !== null && String(admin) !== "") {
+        result.adminCode = String(admin);
+      }
+      if (obsId !== undefined && obsId !== null && String(obsId) !== "") {
+        result.obsId = String(obsId);
+      }
+      if (country !== undefined && country !== null && String(country) !== "") {
+        result.country = String(country);
+      }
+      if (this.debugLocationLogCount < 20) {
+        try {
+          this.debugLocationLogCount++;
+        } catch {}
+      }
+      return result;
+    } catch (_) {
+      // Not JSON, continue
+    }
+
+    // Support common delimiters: comma, pipe, semicolon, space
+    const parts = raw.split(/,/);
+    if (parts.length >= 2) {
+      let latStr: string | undefined;
+      let lngStr: string | undefined;
+      let admin: string | undefined;
+      let obsId: string | undefined;
+      let country: string | undefined;
+      let refId: string | undefined;
+
+      // Check if we have the pattern refId,lat,lng,admin,obsId,country (6+ parts with commas)
+      if (parts.length >= 6 && /,/.test(raw)) {
+        // Treat as: refId, lat, lng, admin, obsId, country
+        refId = parts[0] && parts[0].trim() !== "" ? parts[0] : undefined;
+        latStr = parts[1] && parts[1].trim() !== "" ? parts[1] : undefined;
+        lngStr = parts[2] && parts[2].trim() !== "" ? parts[2] : undefined;
+        admin = parts[3] && parts[3].trim() !== "" ? parts[3] : undefined;
+        obsId = parts[4] && parts[4].trim() !== "" ? parts[4] : undefined;
+        country = parts[5] && parts[5].trim() !== "" ? parts[5] : undefined;
+
+        if (this.debugLocationLogCount < 20) {
+          try {
+            this.debugLocationLogCount++;
+          } catch {}
+        }
+      }
+      // Check if we have the pattern refId,lat,lng,admin (4+ parts with commas)
+      else if (parts.length >= 4 && /,/.test(raw)) {
+        // Treat as: refId, lat, lng, admin
+        refId = parts[0] && parts[0].trim() !== "" ? parts[0] : undefined;
+        latStr = parts[1] && parts[1].trim() !== "" ? parts[1] : undefined;
+        lngStr = parts[2] && parts[2].trim() !== "" ? parts[2] : undefined;
+        admin = parts[3] && parts[3].trim() !== "" ? parts[3] : undefined;
+
+        if (this.debugLocationLogCount < 20) {
+          try {
+            this.debugLocationLogCount++;
+          } catch {}
+        }
+      } else {
+        // Treat as: lat, lng, admin
+        latStr = parts[0] && parts[0].trim() !== "" ? parts[0] : undefined;
+        lngStr = parts[1] && parts[1].trim() !== "" ? parts[1] : undefined;
+        admin = parts[2] && parts[2].trim() !== "" ? parts[2] : undefined;
+      }
+
+      const lat = latStr ? parseFloat(latStr) : NaN;
+      const lng = lngStr ? parseFloat(lngStr) : NaN;
+      const result: any = {};
+      if (!isNaN(lat)) result.latitude = lat;
+      if (!isNaN(lng)) result.longitude = lng;
+      if (admin !== undefined && admin !== null && String(admin) !== "") {
+        result.adminCode = String(admin);
+      }
+      if (obsId !== undefined && obsId !== null && String(obsId) !== "") {
+        result.obsId = String(obsId);
+      }
+      if (country !== undefined && country !== null && String(country) !== "") {
+        result.country = String(country);
+      }
+      // Add refId if it was extracted
+      if (
+        typeof refId !== "undefined" &&
+        refId !== null &&
+        String(refId) !== ""
+      ) {
+        result.refId = String(refId);
+      }
+      if (this.debugLocationLogCount < 20) {
+        try {
+          this.debugLocationLogCount++;
+        } catch {}
+      }
+      return result;
+    }
+
+    // Edge case: admin-only with delimiters (e.g., "472,,,235")
+    if (parts.length >= 4) {
+      const admin = parts[3] && parts[3].trim() !== "" ? parts[3] : undefined;
+      const obsId = parts[4] && parts[4].trim() !== "" ? parts[4] : undefined;
+      const country = parts[5] && parts[5].trim() !== "" ? parts[5] : undefined;
+
+      if (admin !== undefined && admin !== null && String(admin) !== "") {
+        const result: any = { adminCode: String(admin) };
+        if (obsId !== undefined && obsId !== null && String(obsId) !== "") {
+          result.obsId = String(obsId);
+        }
+        if (
+          country !== undefined &&
+          country !== null &&
+          String(country) !== ""
+        ) {
+          result.country = String(country);
+        }
+        if (this.debugLocationLogCount < 20) {
+          try {
+            this.debugLocationLogCount++;
+          } catch {}
+        }
+        return result;
+      }
+    }
+
+    // Try labeled patterns like "lat: .., lon: .., admin: .., obsId: .., country: .."
+    const labeledLatMatch = raw.match(
+      /(lat|latitude|y)\s*[:=]\s*(-?\d+(?:\.\d+)?)/i
+    );
+    const labeledLngMatch = raw.match(
+      /(lng|long|longitude|x)\s*[:=]\s*(-?\d+(?:\.\d+)?)/i
+    );
+    const labeledAdminMatch = raw.match(
+      /(admin|adminCode|gaul[_\s]*code|code)\s*[:=]\s*([^,;|\s]+)/i
+    );
+    const labeledObsIdMatch = raw.match(
+      /(obsId|obs_id|obs)\s*[:=]\s*([^,;|\s]+)/i
+    );
+    const labeledCountryMatch = raw.match(
+      /(country|countryName|country_name)\s*[:=]\s*([^,;|\s]+)/i
+    );
+
+    if (labeledLatMatch || labeledLngMatch) {
+      const result: any = {};
+      if (labeledLatMatch) {
+        const lat = parseFloat(labeledLatMatch[2]);
+        if (!isNaN(lat)) result.latitude = lat;
+      }
+      if (labeledLngMatch) {
+        const lng = parseFloat(labeledLngMatch[2]);
+        if (!isNaN(lng)) result.longitude = lng;
+      }
+      if (labeledAdminMatch) {
+        const admin = labeledAdminMatch[2];
+        if (admin !== undefined && admin !== null && String(admin) !== "") {
+          result.adminCode = String(admin);
+        }
+      }
+      if (labeledObsIdMatch) {
+        const obsId = labeledObsIdMatch[2];
+        if (obsId !== undefined && obsId !== null && String(obsId) !== "") {
+          result.obsId = String(obsId);
+        }
+      }
+      if (labeledCountryMatch) {
+        const country = labeledCountryMatch[2];
+        if (
+          country !== undefined &&
+          country !== null &&
+          String(country) !== ""
+        ) {
+          result.country = String(country);
+        }
+      }
+      if (this.debugLocationLogCount < 20) {
+        try {
+          this.debugLocationLogCount++;
+        } catch {}
+      }
+      return result;
+    }
+
+    // As a last resort, extract first two numbers in the string as lat/lng
+    // BUT ONLY when there are no delimiters present, to avoid misreading admin-only strings
+    if (!/[|;,]/.test(raw)) {
+      const numberMatches = raw.match(/-?\d+(?:\.\d+)?/g);
+      if (numberMatches && numberMatches.length >= 2) {
+        const lat = parseFloat(numberMatches[0]);
+        const lng = parseFloat(numberMatches[1]);
+        const result: any = {};
+        if (!isNaN(lat) && lat >= -90 && lat <= 90) result.latitude = lat;
+        if (!isNaN(lng) && lng >= -180 && lng <= 180) result.longitude = lng;
+        if (this.debugLocationLogCount < 20) {
+          try {
+            this.debugLocationLogCount++;
+          } catch {}
+        }
+        return result;
+      }
+    }
+
+    // Fallback: single admin code
+    const fallback = { adminCode: raw } as any;
+    if (this.debugLocationLogCount < 20) {
+      try {
+        this.debugLocationLogCount++;
+      } catch {}
+    }
+    return fallback;
+  }
+
+  // Helper: extract lat/lng/admin/obsId/country for a row, preferring explicit roles over combined location
+  private getLatLngAdminForRow(
+    row: any[],
+    columns: any[]
+  ): {
+    latitude?: number;
+    longitude?: number;
+    adminCode?: string;
+    obsId?: string;
+    country?: string;
+    refId?: string;
+  } {
+    const latIdx = this.getColumnIndexByRole(columns, "latitude");
+    const lngIdx = this.getColumnIndexByRole(columns, "longitude");
+    const adminIdx = this.getColumnIndexByRole(columns, "adminCode");
+    const locationIdx = this.getColumnIndexByRole(columns, "location");
+
+    const result: any = {};
+
+    if (latIdx >= 0 && row[latIdx] !== undefined && row[latIdx] !== null) {
+      const lat = parseFloat(String(row[latIdx]));
+      if (!isNaN(lat)) result.latitude = lat;
+    }
+    if (lngIdx >= 0 && row[lngIdx] !== undefined && row[lngIdx] !== null) {
+      const lng = parseFloat(String(row[lngIdx]));
+      if (!isNaN(lng)) result.longitude = lng;
+    }
+    if (
+      adminIdx >= 0 &&
+      row[adminIdx] !== undefined &&
+      row[adminIdx] !== null
+    ) {
+      const admin = String(row[adminIdx]);
+      if (admin && admin !== "undefined" && admin !== "null")
+        result.adminCode = admin;
+    }
+
+    if (
+      result.latitude === undefined ||
+      result.longitude === undefined ||
+      result.adminCode === undefined
+    ) {
+      if (locationIdx >= 0) {
+        if (this.debugLocationValueLogCount < 50) {
+          try {
+            const colName = columns[locationIdx]?.displayName || "location";
+            this.debugLocationValueLogCount++;
+          } catch {}
+        }
+        const parsed = this.parseLocationField(row[locationIdx]);
+        if (result.latitude === undefined && parsed.latitude !== undefined)
+          result.latitude = parsed.latitude;
+        if (result.longitude === undefined && parsed.longitude !== undefined)
+          result.longitude = parsed.longitude;
+        if (result.adminCode === undefined && parsed.adminCode !== undefined)
+          result.adminCode = parsed.adminCode;
+        if (result.obsId === undefined && parsed.obsId !== undefined)
+          result.obsId = parsed.obsId;
+        if (result.country === undefined && parsed.country !== undefined)
+          result.country = parsed.country;
+        if (result.refId === undefined && parsed.refId !== undefined)
+          result.refId = parsed.refId;
+        if (this.debugLocationLogCount < 20) {
+          try {
+            this.debugLocationLogCount++;
+          } catch {}
+        }
+      }
+    }
+
+    return result;
+  }
+
   private getBaseMapStyle() {
     return {
       fillColor: "#F2F2F2",
@@ -436,67 +808,101 @@ export class Visual implements IVisual {
       { countryName: string; obsIds: string[] }
     >();
 
+    // Handle table data (primary format)
     if (
-      !this.currentDataView?.table?.columns ||
-      !this.currentDataView?.table?.rows
+      this.currentDataView?.table?.columns &&
+      this.currentDataView?.table?.rows
     ) {
-      return countryMap;
-    }
+      const columns = this.currentDataView.table.columns;
 
-    const columns = this.currentDataView.table.columns;
-    const adminCodeColIndex = columns.findIndex((col) => col.roles?.adminCode);
-    const tooltipColIndex = columns.findIndex((col) => col.roles?.tooltip);
+      // Get the original row data for each marker
+      markers.forEach((marker) => {
+        const markerIndex = this.markers.indexOf(marker);
 
-    if (adminCodeColIndex === -1) {
-      return countryMap;
-    }
+        if (
+          markerIndex >= 0 &&
+          markerIndex < this.currentDataView.table.rows.length
+        ) {
+          const row = this.currentDataView.table.rows[markerIndex];
 
-    // Get the original row data for each marker
-    markers.forEach((marker) => {
-      const markerIndex = this.markers.indexOf(marker);
+          // Use the same logic as the rest of the code to get admin code, obsId, and country
+          const info = this.getLatLngAdminForRow(row, columns);
+          const adminCode = info.adminCode;
+          const obsId = info.obsId;
+          const country = info.country;
 
-      if (
-        markerIndex >= 0 &&
-        markerIndex < this.currentDataView.table.rows.length
-      ) {
-        const row = this.currentDataView.table.rows[markerIndex];
-
-        const adminCode = String(row[adminCodeColIndex]);
-
-        // Get country name from GeoJSON features
-        const countryName = this.getCountryNameFromAdminCode(adminCode);
-
-        // Get ObsID value from tooltip field
-        let obsIdValue = null;
-        if (tooltipColIndex >= 0) {
-          const tooltipValue = row[tooltipColIndex];
-          if (
-            tooltipValue !== null &&
-            tooltipValue !== undefined &&
-            tooltipValue !== ""
-          ) {
-            obsIdValue = String(tooltipValue);
+          // Skip markers without country information
+          if (!country) {
+            return;
           }
-        } else {
-        }
 
-        if (countryMap.has(adminCode)) {
-          // Always add the marker, even if no ObsID value
-          if (obsIdValue) {
-            countryMap.get(adminCode)!.obsIds.push(obsIdValue);
+          // Use country name as the grouping key
+          const groupKey = country;
+
+          if (countryMap.has(groupKey)) {
+            // Add the ObsID if available
+            if (obsId) {
+              countryMap.get(groupKey)!.obsIds.push(obsId);
+            } else {
+              // Add a placeholder for markers without ObsID data
+              countryMap
+                .get(groupKey)!
+                .obsIds.push(`Marker ${markerIndex + 1}`);
+            }
           } else {
-            // Add a placeholder for markers without ObsID data
-            countryMap.get(adminCode)!.obsIds.push(`Marker ${markerIndex + 1}`);
+            countryMap.set(groupKey, {
+              countryName: country,
+              obsIds: obsId ? [obsId] : [`Marker ${markerIndex + 1}`],
+            });
           }
-        } else {
-          countryMap.set(adminCode, {
-            countryName: countryName || `Country ${adminCode}`,
-            obsIds: obsIdValue ? [obsIdValue] : [`Marker ${markerIndex + 1}`],
-          });
         }
-      } else {
-      }
-    });
+      });
+    }
+    // Handle categorical data (fallback)
+    else if (this.currentDataView?.categorical?.categories) {
+      markers.forEach((marker, index) => {
+        const markerIndex = this.markers.indexOf(marker);
+
+        if (markerIndex >= 0) {
+          // Get location info and refId from the marker's stored data
+          const locationInfo = (marker as any).locationInfo;
+          const refId = (marker as any).refId;
+
+          if (locationInfo) {
+            const obsId = locationInfo.obsId;
+            const country = locationInfo.country;
+
+            // Skip markers without country information
+            if (!country) {
+              return;
+            }
+
+            // Use country name as the grouping key
+            const groupKey = country;
+
+            if (countryMap.has(groupKey)) {
+              // Add the ObsID if available
+              if (obsId) {
+                countryMap.get(groupKey)!.obsIds.push(obsId);
+              } else {
+                // Add a placeholder for markers without ObsID data
+                countryMap
+                  .get(groupKey)!
+                  .obsIds.push(`Marker ${markerIndex + 1}`);
+              }
+            } else {
+              countryMap.set(groupKey, {
+                countryName: country,
+                obsIds: obsId ? [obsId] : [`Marker ${markerIndex + 1}`],
+              });
+            }
+          }
+        }
+      });
+      return countryMap;
+    }
+
+    // Note: Removed legacy duplicate table processing to avoid double counting
 
     return countryMap;
   }
@@ -532,7 +938,7 @@ export class Visual implements IVisual {
       return '<div class="tooltip-row"><span class="field-name">No data available</span></div>';
     }
 
-    const tooltipParts = [];
+    const tooltipParts: string[] = [];
 
     // Show each country with its ObsID information
     countryData.forEach((data, adminCode) => {
@@ -540,20 +946,23 @@ export class Visual implements IVisual {
         `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${data.countryName}</span></div>`
       );
 
-      if (data.obsIds.length === 1) {
+      // Ensure unique ObsIDs to avoid repeat entries
+      const uniqueObsIds = Array.from(new Set(data.obsIds));
+
+      if (uniqueObsIds.length === 1) {
         // Show actual ObsID when count is 1
         tooltipParts.push(
-          `<div class="tooltip-row"><span class="field-name">Obs</span><span class="field-value">${data.obsIds[0]}</span></div>`
+          `<div class="tooltip-row"><span class="field-name">Obs</span><span class="field-value">${uniqueObsIds[0]}</span></div>`
         );
       } else {
         // Show count when more than 1
         tooltipParts.push(
-          `<div class="tooltip-row"><span class="field-name">Obs Count</span><span class="field-value">${data.obsIds.length}</span></div>`
+          `<div class="tooltip-row"><span class="field-name">Obs Count</span><span class="field-value">${uniqueObsIds.length}</span></div>`
         );
       }
     });
 
-    return tooltipParts.join("");
+    return this.buildTooltipWithOddDividers(tooltipParts);
   }
 
   // Override zoom controls to respect our desired zoom level
@@ -797,7 +1206,7 @@ export class Visual implements IVisual {
             Setup Required
           </div>
           <div style="font-size: 12px; color: #666; line-height: 1.6;">
-            <div style="margin-bottom: 8px;"><strong>Step 1:</strong> Add Latitude and Longitude fields to your visual</div>
+            <div style="margin-bottom: 8px;"><strong>Step 1:</strong> Add Data field to your visual</div>
             <div style="margin-bottom: 8px;"><strong>Step 2:</strong> Add a Base Map GeoJSON URL in Map Settings</div>
             <div style="font-size: 11px; color: #888; margin-top: 10px;">
               For best results, add your data fields first, then configure the map URL.
@@ -982,23 +1391,31 @@ export class Visual implements IVisual {
       return this.cachedAdminCodes;
     }
 
+    const adminCodes: string[] = [];
+
+    // Handle table data (primary format)
     if (
-      !this.currentDataView?.table?.columns ||
-      !this.currentDataView?.table?.rows
+      this.currentDataView?.table?.columns &&
+      this.currentDataView?.table?.rows
     ) {
-      return [];
+      const columns = this.currentDataView.table.columns;
+      const tableAdminCodes = this.currentDataView.table.rows
+        .map((row) => this.getLatLngAdminForRow(row, columns).adminCode)
+        .filter((code) => !!code) as string[];
+      adminCodes.push(...tableAdminCodes);
     }
-
-    const columns = this.currentDataView.table.columns;
-    const adminCodeColIndex = columns.findIndex((col) => col.roles?.adminCode);
-
-    if (adminCodeColIndex === -1) {
-      return [];
+    // Handle categorical data (fallback)
+    else if (this.currentDataView?.categorical?.categories) {
+      const locationCategory = this.currentDataView.categorical.categories[0];
+      if (locationCategory && locationCategory.values) {
+        locationCategory.values.forEach((locationValue: any) => {
+          const locationInfo = this.parseLocationField(locationValue);
+          if (locationInfo.adminCode) {
+            adminCodes.push(locationInfo.adminCode);
+          }
+        });
+      }
     }
-
-    const adminCodes = this.currentDataView.table.rows
-      .map((row) => String(row[adminCodeColIndex]))
-      .filter((code) => code && code !== "undefined" && code !== "null");
 
     // Cache the admin codes
     this.cachedAdminCodes = adminCodes;
@@ -1015,19 +1432,21 @@ export class Visual implements IVisual {
     }
 
     const columns = this.currentDataView.table.columns;
-    const adminCodeColIndex = columns.findIndex((col) => col.roles?.adminCode);
     const choroplethTooltipColIndex = columns.findIndex(
       (col) => col.roles?.choroplethTooltip
     );
 
-    if (adminCodeColIndex === -1 || choroplethTooltipColIndex === -1) {
+    if (choroplethTooltipColIndex === -1) {
       return null;
     }
 
     // Find the first row that matches this GAUL code
     const matchingRow = this.currentDataView.table.rows.find((row) => {
-      const rowAdminCode = String(row[adminCodeColIndex]);
-      return rowAdminCode === String(gaulCode);
+      const info = this.getLatLngAdminForRow(row, columns);
+      return (
+        info.adminCode !== undefined &&
+        String(info.adminCode) === String(gaulCode)
+      );
     });
 
     if (matchingRow) {
@@ -1040,55 +1459,61 @@ export class Visual implements IVisual {
 
   // Build choropleth tooltip content using same format as cluster tooltips
   private buildChoroplethTooltipContent(gaulCode: any): string {
-    if (
-      !this.currentDataView?.table?.columns ||
-      !this.currentDataView?.table?.rows
-    ) {
-      return `Matched Region (Code: ${gaulCode})`;
-    }
-
-    const columns = this.currentDataView.table.columns;
-    const adminCodeColIndex = columns.findIndex((col) => col.roles?.adminCode);
-    const tooltipColIndex = columns.findIndex((col) => col.roles?.tooltip);
-
-    if (adminCodeColIndex === -1) {
-      return `Matched Region (Code: ${gaulCode})`;
-    }
-
-    // Find ALL rows that match this GAUL code
-    const matchingRows = this.currentDataView.table.rows.filter((row) => {
-      const rowAdminCode = String(row[adminCodeColIndex]);
-      return rowAdminCode === String(gaulCode);
-    });
-
-    if (matchingRows.length === 0) {
-      return `Matched Region (Code: ${gaulCode})`;
-    }
-
-    // Get country name from GeoJSON features
-    const countryName = this.getCountryNameFromAdminCode(String(gaulCode));
-
-    // Collect all ObsIDs for this country
     const obsIds: string[] = [];
-    matchingRows.forEach((row) => {
-      if (tooltipColIndex >= 0) {
-        const tooltipValue = row[tooltipColIndex];
-        if (
-          tooltipValue !== null &&
-          tooltipValue !== undefined &&
-          tooltipValue !== ""
-        ) {
-          obsIds.push(String(tooltipValue));
-        }
-      }
-    });
+    let countryName: string | null = null;
 
-    const tooltipParts = [];
+    // Handle table data (primary format)
+    if (
+      this.currentDataView?.table?.columns &&
+      this.currentDataView?.table?.rows
+    ) {
+      const columns = this.currentDataView.table.columns;
+
+      // Find ALL rows that match this GAUL code
+      const matchingRows = this.currentDataView.table.rows.filter((row) => {
+        const info = this.getLatLngAdminForRow(row, columns);
+        return (
+          info.adminCode !== undefined &&
+          String(info.adminCode) === String(gaulCode)
+        );
+      });
+
+      if (matchingRows.length > 0) {
+        // Get country name from first matching row's location field, or from GeoJSON
+        const firstRowInfo = this.getLatLngAdminForRow(
+          matchingRows[0],
+          columns
+        );
+        countryName =
+          firstRowInfo.country ||
+          this.getCountryNameFromAdminCode(String(gaulCode));
+
+        // Collect all ObsIDs for this country from location field
+        matchingRows.forEach((row) => {
+          const info = this.getLatLngAdminForRow(row, columns);
+          if (
+            info.obsId !== undefined &&
+            info.obsId !== null &&
+            info.obsId !== ""
+          ) {
+            obsIds.push(String(info.obsId));
+          }
+        });
+      }
+    }
+
+    if (obsIds.length === 0) {
+      return `Matched Region (Code: ${gaulCode})`;
+    }
+
+    const tooltipParts: string[] = [];
 
     // Add country information
     tooltipParts.push(
       `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${
-        countryName || `Country ${gaulCode}`
+        countryName ||
+        this.getCountryNameFromAdminCode(String(gaulCode)) ||
+        `Country ${gaulCode}`
       }</span></div>`
     );
 
@@ -1105,7 +1530,7 @@ export class Visual implements IVisual {
       );
     }
 
-    return tooltipParts.join("");
+    return this.buildTooltipWithOddDividers(tooltipParts);
   }
 
   // Update choropleth layer with current data
@@ -1213,13 +1638,12 @@ export class Visual implements IVisual {
     try {
       const dataView: DataView = options.dataViews[0];
 
-      // Reset data when no data
-      if (
-        !dataView ||
-        !dataView.table ||
-        !dataView.table.columns ||
-        !dataView.table.rows
-      ) {
+      // Debug: Log the data structure we're receiving
+
+      // Handle table data format for both location and refId
+      if (dataView.table && dataView.table.columns && dataView.table.rows) {
+        this.processTableData(dataView);
+      } else {
         this.clearAllData();
         this.showEmptyState();
         return;
@@ -1271,27 +1695,7 @@ export class Visual implements IVisual {
       //   tableRowCount: dataView.table?.rows?.length || 0,
       //   tableColumnCount: dataView.table?.columns?.length || 0,
 
-      // Process data based on what's available
-      if (
-        dataView.table &&
-        dataView.table.rows &&
-        dataView.table.rows.length > 0
-      ) {
-        const values = dataView.table.rows;
-        const columns = dataView.table.columns;
-
-        // Create selection IDs for markers FIRST
-        this.createSelectionIds(dataView);
-
-        // Process marker data from Power BI (lat/long) AFTER selection IDs are created
-        this.processMarkerData(dataView);
-
-        // Data processing complete
-      } else {
-        this.clearAllData();
-        this.showEmptyState();
-        return;
-      }
+      // Data processing is handled by processCategoricalData or processTableData methods
 
       // Update markers visibility based on current Power BI filtering
       this.updateMarkersVisibility(this.currentSelection);
@@ -1305,6 +1709,411 @@ export class Visual implements IVisual {
     }
   }
 
+  // Process categorical data from two separate datasets (location and refId)
+  private processCategoricalData(dataView: DataView) {
+    if (!dataView.categorical) {
+      return;
+    }
+
+    // Clear cached admin codes when processing new data
+    this.cachedAdminCodes = [];
+
+    // Get location data from first categorical dataset
+    const locationCategories = dataView.categorical.categories;
+
+    if (!locationCategories || locationCategories.length === 0) {
+      this.clearAllData();
+      this.showEmptyState();
+      return;
+    }
+
+    // Get refId data from table (if available)
+    let refIdData: any[] = [];
+    if (dataView.table && dataView.table.rows) {
+      const refIdColIndex = dataView.table.columns.findIndex(
+        (col) => col.roles?.refId
+      );
+      if (refIdColIndex >= 0) {
+        refIdData = dataView.table.rows.map((row) => row[refIdColIndex]);
+      }
+    }
+
+    const locationCategory = locationCategories[0]; // First dataset
+
+    // Create selection IDs for markers
+    this.createSelectionIdsFromCategorical(dataView);
+
+    // Process markers using categorical data
+    this.processMarkersFromCategoricalWithTable(
+      locationCategory,
+      refIdData,
+      dataView
+    );
+
+    // Force choropleth layer update when both GeoJSON and data are ready
+    this.forceChoroplethUpdate();
+  }
+
+  // Process table data (backward compatibility)
+  private processTableData(dataView: DataView) {
+    if (!dataView.table || !dataView.table.columns || !dataView.table.rows) {
+      this.clearAllData();
+      this.showEmptyState();
+      return;
+    }
+
+    // Clear cached admin codes when processing new data
+    this.cachedAdminCodes = [];
+
+    // Create selection IDs for markers FIRST
+    this.createSelectionIds(dataView);
+
+    // Process marker data from Power BI (lat/long) AFTER selection IDs are created
+    this.processMarkerData(dataView);
+
+    // Force choropleth layer update when both GeoJSON and data are ready
+    this.forceChoroplethUpdate();
+  }
+
+  // Create selection IDs from categorical data
+  private createSelectionIdsFromCategorical(dataView: DataView) {
+    if (!dataView.categorical || !dataView.categorical.categories) {
+      return;
+    }
+
+    const locationCategory = dataView.categorical.categories[0];
+    if (!locationCategory || !locationCategory.values) {
+      return;
+    }
+
+    // Clear existing selection IDs
+    this.selectionIds = [];
+
+    // Create selection IDs for each location value
+    this.selectionIds = locationCategory.values.map((value, index) => {
+      return this.host
+        .createSelectionIdBuilder()
+        .withCategory(locationCategory, index)
+        .createSelectionId();
+    });
+  }
+
+  // Process markers from categorical data
+  private processMarkersFromCategorical(
+    locationCategory: any,
+    refIdCategory: any,
+    dataView: DataView
+  ) {
+    if (!locationCategory || !locationCategory.values) {
+      return;
+    }
+
+    // Clear existing markers
+    this.markers.forEach((marker) => {
+      this.markerClusterGroup.removeLayer(marker);
+    });
+    this.markers = [];
+
+    // Clear the cluster group
+    this.markerClusterGroup.clearLayers();
+
+    // Process each location value
+    locationCategory.values.forEach((locationValue: any, index: number) => {
+      // Parse location field
+      const locationInfo = this.parseLocationField(locationValue);
+
+      // Get refId if available
+      let refId = undefined;
+      if (
+        refIdCategory &&
+        refIdCategory.values &&
+        refIdCategory.values[index]
+      ) {
+        refId = refIdCategory.values[index];
+      }
+
+      // Only create markers for valid coordinates
+      if (
+        locationInfo.latitude !== undefined &&
+        locationInfo.longitude !== undefined &&
+        !isNaN(locationInfo.latitude) &&
+        !isNaN(locationInfo.longitude)
+      ) {
+        const lat = locationInfo.latitude;
+        const lng = locationInfo.longitude;
+
+        // Always use orange color for markers
+        const markerColor = "#F9B112";
+
+        // Create custom marker with dynamic color styling
+        const customMarkerIcon = L.divIcon({
+          className: "custom-marker",
+          html: `
+              <svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12.5 0C5.596 0 0 5.596 0 12.5c0 9.375 12.5 28.5 12.5 28.5s12.5-19.125 12.5-28.5C25 5.596 19.404 0 12.5 0z" fill="${markerColor}"/>
+                <circle cx="12.5" cy="12.5" r="6" fill="white"/>
+              </svg>
+            `,
+          iconSize: [25, 41],
+          iconAnchor: [12, 41],
+          popupAnchor: [1, -34],
+          tooltipAnchor: [16, -28],
+        });
+
+        const marker = L.marker([lat, lng], {
+          icon: customMarkerIcon,
+        });
+
+        // Add selection ID to marker
+        if (this.selectionIds && this.selectionIds[index]) {
+          (marker as any).options.selectionId = this.selectionIds[index];
+        }
+
+        // Store location info and refId for tooltip
+        (marker as any).locationInfo = locationInfo;
+        (marker as any).refId = refId;
+
+        // Add click handler for selection
+        marker.on("click", (event) => {
+          // Build tooltip content
+          const tooltipContent = this.buildCategoricalTooltipContent(
+            locationInfo,
+            refId
+          );
+          this.showTooltip(tooltipContent, event.latlng);
+
+          // Handle selection if selection ID exists
+          if (this.selectionIds && this.selectionIds[index]) {
+            const clickedSelectionId = this.selectionIds[index];
+
+            // Check if this marker is already selected
+            const isCurrentlySelected = this.currentSelection.some((id) => {
+              if (!id || !clickedSelectionId) return false;
+              if (id.getKey && clickedSelectionId.getKey) {
+                return id.getKey() === clickedSelectionId.getKey();
+              }
+              if (id.toString && clickedSelectionId.toString) {
+                return id.toString() === clickedSelectionId.toString();
+              }
+              return id === clickedSelectionId;
+            });
+
+            if (isCurrentlySelected) {
+              // Deselect the marker
+              this.selectionManager
+                .clear()
+                .then(() => {
+                  this.currentSelection = [];
+                  this.persistentSelection = [];
+                  this.updateMarkersVisibility([]);
+                })
+                .catch((error) => {
+                  // Error clearing selection
+                });
+            } else {
+              // Select the marker
+              this.selectionManager
+                .select(clickedSelectionId)
+                .then((ids: ISelectionId[]) => {
+                  this.currentSelection = ids;
+                  this.persistentSelection = [...ids];
+                  this.updateMarkersVisibility(ids);
+                })
+                .catch((error) => {
+                  // Error selecting marker
+                });
+            }
+          }
+
+          L.DomEvent.stopPropagation(event);
+        });
+
+        // Add marker to cluster group
+        this.markerClusterGroup.addLayer(marker);
+        this.markers.push(marker);
+      }
+    });
+
+    // Only add cluster group to map if base map URL is provided
+    const hasBaseMapUrl =
+      this.settings?.mapSettingsCard?.baseMapUrl?.value?.trim() !== "";
+    if (hasBaseMapUrl && !this.map.hasLayer(this.markerClusterGroup)) {
+      this.markerClusterGroup.addTo(this.map);
+    }
+  }
+
+  // Process markers from categorical data with table refId data
+  private processMarkersFromCategoricalWithTable(
+    locationCategory: any,
+    refIdData: any[],
+    dataView: DataView
+  ) {
+    if (!locationCategory || !locationCategory.values) {
+      return;
+    }
+
+    // Clear existing markers
+    this.markers.forEach((marker) => {
+      this.markerClusterGroup.removeLayer(marker);
+    });
+    this.markers = [];
+
+    // Clear the cluster group
+    this.markerClusterGroup.clearLayers();
+
+    // Process each location value
+    locationCategory.values.forEach((locationValue: any, index: number) => {
+      // Parse location field
+      const locationInfo = this.parseLocationField(locationValue);
+
+      // Get refId from table data if available
+      let refId = undefined;
+      if (refIdData && refIdData[index] !== undefined) {
+        refId = refIdData[index];
+      }
+
+      // Only create markers for valid coordinates
+      if (
+        locationInfo.latitude !== undefined &&
+        locationInfo.longitude !== undefined &&
+        !isNaN(locationInfo.latitude) &&
+        !isNaN(locationInfo.longitude)
+      ) {
+        const lat = locationInfo.latitude;
+        const lng = locationInfo.longitude;
+
+        // Always use orange color for markers
+        const markerColor = "#F9B112";
+
+        // Create custom marker with dynamic color styling
+        const customMarkerIcon = L.divIcon({
+          className: "custom-marker",
+          html: `
+              <svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12.5 0C5.596 0 0 5.596 0 12.5c0 9.375 12.5 28.5 12.5 28.5s12.5-19.125 12.5-28.5C25 5.596 19.404 0 12.5 0z" fill="${markerColor}"/>
+                <circle cx="12.5" cy="12.5" r="6" fill="white"/>
+              </svg>
+            `,
+          iconSize: [25, 41],
+          iconAnchor: [12, 41],
+          popupAnchor: [1, -34],
+          tooltipAnchor: [16, -28],
+        });
+
+        const marker = L.marker([lat, lng], {
+          icon: customMarkerIcon,
+        });
+
+        // Add selection ID to marker
+        if (this.selectionIds && this.selectionIds[index]) {
+          (marker as any).options.selectionId = this.selectionIds[index];
+        }
+
+        // Store location info and refId for tooltip
+        (marker as any).locationInfo = locationInfo;
+        (marker as any).refId = refId;
+
+        // Add click handler for selection
+        marker.on("click", (event) => {
+          // Build tooltip content
+          const tooltipContent = this.buildCategoricalTooltipContent(
+            locationInfo,
+            refId
+          );
+          this.showTooltip(tooltipContent, event.latlng);
+
+          // Handle selection if selection ID exists
+          if (this.selectionIds && this.selectionIds[index]) {
+            const clickedSelectionId = this.selectionIds[index];
+
+            // Check if this marker is already selected
+            const isCurrentlySelected = this.currentSelection.some((id) => {
+              if (!id || !clickedSelectionId) return false;
+              if (id.getKey && clickedSelectionId.getKey) {
+                return id.getKey() === clickedSelectionId.getKey();
+              }
+              if (id.toString && clickedSelectionId.toString) {
+                return id.toString() === clickedSelectionId.toString();
+              }
+              return id === clickedSelectionId;
+            });
+
+            if (isCurrentlySelected) {
+              // Deselect the marker
+              this.selectionManager
+                .clear()
+                .then(() => {
+                  this.currentSelection = [];
+                  this.persistentSelection = [];
+                  this.updateMarkersVisibility([]);
+                })
+                .catch((error) => {
+                  // Error clearing selection
+                });
+            } else {
+              // Select the marker
+              this.selectionManager
+                .select(clickedSelectionId)
+                .then((ids: ISelectionId[]) => {
+                  this.currentSelection = ids;
+                  this.persistentSelection = [...ids];
+                  this.updateMarkersVisibility(ids);
+                })
+                .catch((error) => {
+                  // Error selecting marker
+                });
+            }
+          }
+
+          L.DomEvent.stopPropagation(event);
+        });
+
+        // Add marker to cluster group
+        this.markerClusterGroup.addLayer(marker);
+        this.markers.push(marker);
+      }
+    });
+
+    // Only add cluster group to map if base map URL is provided
+    const hasBaseMapUrl =
+      this.settings?.mapSettingsCard?.baseMapUrl?.value?.trim() !== "";
+    if (hasBaseMapUrl && !this.map.hasLayer(this.markerClusterGroup)) {
+      this.markerClusterGroup.addTo(this.map);
+    }
+  }
+
+  // Build tooltip content for categorical data
+  private buildCategoricalTooltipContent(
+    locationInfo: any,
+    refId: any
+  ): string {
+    const tooltipParts: string[] = [];
+
+    // Add Obs ID from location field if available
+    if (
+      locationInfo.obsId !== undefined &&
+      locationInfo.obsId !== null &&
+      locationInfo.obsId !== ""
+    ) {
+      tooltipParts.push(
+        `<div class="tooltip-row"><span class="field-name">Obs ID</span><span class="field-value">${locationInfo.obsId}</span></div>`
+      );
+    }
+
+    // Add Country from location field if available
+    if (
+      locationInfo.country !== undefined &&
+      locationInfo.country !== null &&
+      locationInfo.country !== ""
+    ) {
+      tooltipParts.push(
+        `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${locationInfo.country}</span></div>`
+      );
+    }
+
+    return this.buildTooltipWithOddDividers(tooltipParts);
+  }
+
   private processMarkerData(dataView: DataView) {
     if (!dataView.table || !dataView.table.columns || !dataView.table.rows) {
       return;
@@ -1316,45 +2125,29 @@ export class Visual implements IVisual {
     const columns = dataView.table.columns;
     const values = dataView.table.rows;
 
-    // Find column indices for marker data
-    const latColIndex = columns.findIndex((col) => col.roles?.latitude);
-    const lngColIndex = columns.findIndex((col) => col.roles?.longitude);
-    const adminCodeColIndex = columns.findIndex((col) => col.roles?.adminCode);
-
-    // Fallback: If roles are not found, try to detect by column names
-    let fallbackLatColIndex = -1;
-    let fallbackLngColIndex = -1;
-
-    if (latColIndex === -1 || lngColIndex === -1) {
-      fallbackLatColIndex = columns.findIndex(
-        (col) =>
-          col.displayName.toLowerCase().includes("lat") ||
-          col.displayName.toLowerCase().includes("latitude") ||
-          col.displayName.toLowerCase().includes("y") ||
-          col.displayName === "Latitude" ||
-          col.displayName === "latitude"
-      );
-
-      fallbackLngColIndex = columns.findIndex(
-        (col) =>
-          col.displayName.toLowerCase().includes("lng") ||
-          col.displayName.toLowerCase().includes("longitude") ||
-          col.displayName.toLowerCase().includes("x") ||
-          col.displayName === "Longitude" ||
-          col.displayName === "longitude"
-      );
+    // Get Ref ID field for filtering (contains comma-separated list of visible Ref IDs)
+    const refIdColIndex = columns.findIndex((col) => col.roles?.refId);
+    let refIdFilterString = "";
+    if (refIdColIndex >= 0 && values.length > 0) {
+      refIdFilterString = String(values[0][refIdColIndex] || "");
     }
 
-    // Use fallback indices if primary roles are not found
-    const finalLatColIndex =
-      latColIndex >= 0 ? latColIndex : fallbackLatColIndex;
-    const finalLngColIndex =
-      lngColIndex >= 0 ? lngColIndex : fallbackLngColIndex;
+    // Build markers using either explicit lat/lng or the combined location field
+    const extracted = values.map((row) =>
+      this.getLatLngAdminForRow(row, columns)
+    );
+    const validCoordinateRows = values
+      .map((row, idx) => ({ row, idx, info: extracted[idx] }))
+      .filter(
+        (o) =>
+          o.info &&
+          o.info.latitude !== undefined &&
+          o.info.longitude !== undefined &&
+          !isNaN(o.info.latitude as number) &&
+          !isNaN(o.info.longitude as number)
+      );
 
-    // Debug: Show all columns and their roles
-    // All available columns for marker debugging
-
-    if (finalLatColIndex >= 0 && finalLngColIndex >= 0) {
+    if (validCoordinateRows.length > 0) {
       // Found latitude/longitude columns for markers
       // Latitude column index: finalLatColIndex, name: columns[finalLatColIndex]?.displayName
       // Longitude column index: finalLngColIndex, name: columns[finalLngColIndex]?.displayName
@@ -1362,27 +2155,7 @@ export class Visual implements IVisual {
       // Debug: Show actual values in the first few rows
       // First 3 rows of lat/lng data
 
-      // Check if we have valid coordinate data
-      const validCoordinateRows = values.filter((row) => {
-        const lat = parseFloat(String(row[finalLatColIndex]));
-        const lng = parseFloat(String(row[finalLngColIndex]));
-        return !isNaN(lat) && !isNaN(lng) && lat !== 0 && lng !== 0;
-      });
-
-      // Found validCoordinateRows.length rows with valid coordinates out of values.length total rows
-
-      // Debug: Show what the data structure should look like
-      // EXPECTED DATA STRUCTURE for markers + choropleth:
-      //   • Each row should have: lat, lng, geometryString
-      //   • lat/lng should be numbers (e.g., 40.7128, -74.0060)
-      //   • geometryString should contain valid GeoJSON
-      //   • Current issue: lat/lng are 'NA' strings instead of numbers
-
-      if (validCoordinateRows.length === 0) {
-        // No valid coordinate data found - skipping marker creation
-        // SOLUTION: Ensure your data source has actual coordinate values, not 'NA'
-        return;
-      }
+      // validCoordinateRows already computed above using combined/existing fields
 
       // Clear existing markers
       this.markers.forEach((marker) => {
@@ -1394,14 +2167,9 @@ export class Visual implements IVisual {
       this.markerClusterGroup.clearLayers();
 
       // Create markers only for rows with valid coordinates
-      validCoordinateRows.forEach((row, index) => {
-        const lat = parseFloat(String(row[finalLatColIndex]));
-        const lng = parseFloat(String(row[finalLngColIndex]));
-
-        // Log Admin Code for debugging (but don't change marker color)
-        if (adminCodeColIndex >= 0) {
-          const adminCode = row[adminCodeColIndex];
-        }
+      validCoordinateRows.forEach((o) => {
+        const lat = o.info.latitude as number;
+        const lng = o.info.longitude as number;
 
         // Always use orange color for markers
         const markerColor = "#F9B112";
@@ -1426,16 +2194,49 @@ export class Visual implements IVisual {
         });
 
         // Add selection ID to marker (use original row index if possible)
-        const originalRowIndex = values.indexOf(row);
+        const originalRowIndex = o.idx;
         if (this.selectionIds && this.selectionIds[originalRowIndex]) {
           (marker as any).options.selectionId =
             this.selectionIds[originalRowIndex];
         }
 
+        // Store location info and refId for tooltips and clustering
+        (marker as any).locationInfo = o.info;
+
+        // Get refId from the location data (first part of the location string)
+        const locationRefId = o.info.refId;
+        (marker as any).refId = locationRefId;
+
+        // Apply opacity based on Ref ID filtering
+        const isRefIdInMeasure = this.isMarkerRefIdInMeasure(
+          locationRefId,
+          refIdFilterString
+        );
+
+        // Store the opacity state on the marker for later use
+        (marker as any).refIdFiltered = isRefIdInMeasure;
+
+        // Apply opacity immediately if element is available
+        const markerElement = marker.getElement();
+        if (markerElement) {
+          markerElement.style.opacity = isRefIdInMeasure ? "1" : "0.3";
+        } else {
+          // If element not available yet, apply opacity after marker is added to map
+          marker.on("add", () => {
+            const element = marker.getElement();
+            if (element) {
+              element.style.opacity = isRefIdInMeasure ? "1" : "0.3";
+            }
+          });
+        }
+
         // Add click handler for selection
         marker.on("click", (event) => {
-          // Build tooltip content from Power BI tooltip fields
-          const tooltipContent = this.buildMarkerTooltipContent(row, columns);
+          // Build tooltip content using stored locationInfo and refId
+          const tooltipContent = this.buildCategoricalTooltipContent(
+            o.info,
+            locationRefId
+          );
           this.showTooltip(tooltipContent, event.latlng);
 
           // Handle selection if selection ID exists
@@ -1599,19 +2400,25 @@ export class Visual implements IVisual {
           visibleMarkers++;
         }
 
-        // Apply opacity based on selection
-        if (selectedIds.length > 0) {
-          // If there are selections, dim non-selected markers
-          const isSelected = isExplicitlySelected;
-          const markerElement = marker.getElement();
-          if (markerElement) {
-            markerElement.style.opacity = isSelected ? "1" : "0.5";
-          }
-        } else {
-          // No selections, show all markers at full opacity
-          const markerElement = marker.getElement();
-          if (markerElement) {
-            markerElement.style.opacity = "1";
+        // Apply opacity based on selection and Ref ID filtering
+        const markerElement = marker.getElement();
+        if (markerElement) {
+          // Get Ref ID filtering state
+          const isRefIdFiltered = (marker as any).refIdFiltered;
+
+          if (selectedIds.length > 0) {
+            // If there are selections, dim non-selected markers
+            const isSelected = isExplicitlySelected;
+            if (isSelected) {
+              // Selected marker: use Ref ID filtering opacity
+              markerElement.style.opacity = isRefIdFiltered ? "1" : "0.3";
+            } else {
+              // Non-selected marker: dim further
+              markerElement.style.opacity = isRefIdFiltered ? "0.5" : "0.15";
+            }
+          } else {
+            // No selections, use Ref ID filtering opacity
+            markerElement.style.opacity = isRefIdFiltered ? "1" : "0.3";
           }
         }
       } else {
@@ -1744,7 +2551,7 @@ export class Visual implements IVisual {
   }
 
   private buildMarkerTooltipContent(row: any[], columns: any[]): string {
-    const tooltipParts = [];
+    const tooltipParts: string[] = [];
 
     // Find tooltip column indices
     const tooltipColIndices = columns
@@ -1772,12 +2579,10 @@ export class Visual implements IVisual {
 
     // If no tooltip data found, show coordinates as fallback
     if (tooltipParts.length === 0) {
-      const latColIndex = columns.findIndex((col) => col.roles?.latitude);
-      const lngColIndex = columns.findIndex((col) => col.roles?.longitude);
-
-      if (latColIndex >= 0 && lngColIndex >= 0) {
-        const lat = row[latColIndex];
-        const lng = row[lngColIndex];
+      const info = this.getLatLngAdminForRow(row, columns);
+      if (info.latitude !== undefined && info.longitude !== undefined) {
+        const lat = info.latitude;
+        const lng = info.longitude;
         tooltipParts.push(
           `<div class="tooltip-row"><span class="field-name">Latitude</span><span class="field-value">${lat}</span></div>`
         );
@@ -1787,7 +2592,7 @@ export class Visual implements IVisual {
       }
     }
 
-    return tooltipParts.join("");
+    return this.buildTooltipWithOddDividers(tooltipParts);
   }
 
   private showEmptyState() {

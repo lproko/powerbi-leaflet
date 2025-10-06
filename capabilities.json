@@ -1,34 +1,16 @@
 {
   "dataRoles": [
     {
-      "name": "latitude",
+      "name": "location",
       "kind": "Grouping",
-      "displayName": "Latitude",
-      "description": "Latitude for marker placement"
+      "displayName": "Data",
+      "description": "Single field containing Lat, Lng, Admin Code, Obs ID, Country"
     },
     {
-      "name": "longitude",
-      "kind": "Grouping",
-      "displayName": "Longitude",
-      "description": "Longitude for marker placement"
-    },
-    {
-      "name": "tooltip",
+      "name": "refId",
       "kind": "GroupingOrMeasure",
-      "displayName": "Tooltip",
-      "description": "Additional data for tooltips"
-    },
-    {
-      "name": "adminCode",
-      "kind": "GroupingOrMeasure",
-      "displayName": "Admin Code",
-      "description": "Administrative code number"
-    },
-    {
-      "name": "choroplethTooltip",
-      "kind": "GroupingOrMeasure",
-      "displayName": "Choropleth Tooltip",
-      "description": "Data to display in choropleth tooltips"
+      "displayName": "Ref ID",
+      "description": "Reference ID for the data point"
     }
   ],
   "dataViewMappings": [
@@ -38,27 +20,17 @@
           "select": [
             {
               "for": {
-                "in": "latitude"
+                "in": "location"
               }
             },
             {
               "for": {
-                "in": "longitude"
+                "in": "refId"
               }
             },
             {
               "for": {
-                "in": "tooltip"
-              }
-            },
-            {
-              "for": {
-                "in": "adminCode"
-              }
-            },
-            {
-              "for": {
-                "in": "choroplethTooltip"
+                "in": "refIdMeasure"
               }
             }
           ]
