@@ -1,35 +1,16 @@
 {
   "dataRoles": [
     {
-      "name": "choroplethGeometry",
+      "name": "location",
       "kind": "Grouping",
-      "displayName": "Choropleth Geometry",
-      "description": "Complete GeoJSON geometry data for choropleth regions"
-    },
-
-    {
-      "name": "latitude",
-      "kind": "Grouping",
-      "displayName": "Latitude",
-      "description": "Latitude for marker placement"
+      "displayName": "Data",
+      "description": "Single field containing Lat, Lng, Admin Code, Obs ID, Country"
     },
     {
-      "name": "longitude",
-      "kind": "Grouping",
-      "displayName": "Longitude",
-      "description": "Longitude for marker placement"
-    },
-    {
-      "name": "tooltip",
+      "name": "refId",
       "kind": "GroupingOrMeasure",
-      "displayName": "Tooltip",
-      "description": "Additional data for tooltips"
-    },
-    {
-      "name": "choroplethTooltip",
-      "kind": "GroupingOrMeasure",
-      "displayName": "Choropleth Tooltip",
-      "description": "Additional data for choropleth tooltips"
+      "displayName": "Ref ID",
+      "description": "Reference ID for the data point"
     }
   ],
   "dataViewMappings": [
@@ -39,27 +20,17 @@
           "select": [
             {
               "for": {
-                "in": "choroplethGeometry"
+                "in": "location"
               }
             },
             {
               "for": {
-                "in": "latitude"
+                "in": "refId"
               }
             },
             {
               "for": {
-                "in": "longitude"
-              }
-            },
-            {
-              "for": {
-                "in": "tooltip"
-              }
-            },
-            {
-              "for": {
-                "in": "choroplethTooltip"
+                "in": "refIdMeasure"
               }
             }
           ]
@@ -68,40 +39,21 @@
     }
   ],
   "objects": {
-    "choroplethSettings": {
-      "displayName": "Choropleth Settings",
+    "mapSettings": {
+      "displayName": "Map Settings",
       "properties": {
-        "showChoropleth": {
-          "displayName": "Show Choropleth",
+        "baseMapUrl": {
+          "displayName": "Base Map GeoJSON URL",
+          "description": "Public URL to load base map GeoJSON data from",
           "type": {
-            "bool": true
+            "text": true
           }
         },
-        "colorScheme": {
-          "displayName": "Color Scheme",
+        "disputedBordersUrl": {
+          "displayName": "Disputed Borders GeoJSON URL",
+          "description": "Public URL to load disputed borders GeoJSON data from",
           "type": {
-            "enumeration": [
-              {
-                "value": "YlOrRd",
-                "displayName": "Yellow-Orange-Red"
-              },
-              {
-                "value": "Blues",
-                "displayName": "Blues"
-              },
-              {
-                "value": "Greens",
-                "displayName": "Greens"
-              },
-              {
-                "value": "Reds",
-                "displayName": "Reds"
-              },
-              {
-                "value": "Viridis",
-                "displayName": "Viridis"
-              }
-            ]
+            "text": true
           }
         }
       }

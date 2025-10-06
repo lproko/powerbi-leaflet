@@ -2,6 +2,9 @@ import "leaflet/dist/leaflet.css";
 import * as L from "leaflet";
 import "leaflet-draw/dist/leaflet.draw.css";
 import "leaflet-draw";
+import "leaflet.markercluster/dist/MarkerCluster.css";
+import "leaflet.markercluster/dist/MarkerCluster.Default.css";
+import "leaflet.markercluster";
 import powerbiVisualsApi from "powerbi-visuals-api";
 import IVisual = powerbiVisualsApi.extensibility.visual.IVisual;
 import VisualConstructorOptions = powerbiVisualsApi.extensibility.visual.VisualConstructorOptions;
@@ -9,40 +12,8 @@ import VisualUpdateOptions = powerbiVisualsApi.extensibility.visual.VisualUpdate
 import DataView = powerbiVisualsApi.DataView;
 import ISelectionManager = powerbiVisualsApi.extensibility.ISelectionManager;
 import ISelectionId = powerbiVisualsApi.visuals.ISelectionId;
-import markerIcon from "leaflet/dist/images/marker-icon.png";
-import { disputedBorders } from "./disputed-borders";
 import customGeoJSON from "./custom.geo.json";
-
-interface ChoroplethFeature {
-  type: string;
-  properties: {
-    admin_boundary?: string;
-    admin_level?: number;
-    choropleth_value?: number;
-    name?: string;
-    gaul_code?: number;
-    gaul0_code?: number;
-    gaul0_name?: string;
-    iso3_code?: string;
-    continent?: string;
-    disp_en?: string;
-    adminCode?: number | string;
-    countryName?: string;
-    isoCode?: string;
-  };
-  geometry: any;
-}
-
-interface PowerBIChoroplethData {
-  adminCode: number | string;
-  geometry: any;
-  choroplethValue: number;
-  countryName: string;
-  isoCode: string;
-  continent: string;
-  tooltipData: Map<string, any>;
-  choroplethTooltipData: Map<string, any>; // Power BI choropleth tooltip data
-}
+import { VisualFormattingSettingsModel } from "./settings";
 
 export class Visual implements IVisual {
   private target: HTMLElement;
@@ -51,34 +22,32 @@ export class Visual implements IVisual {
   private host: powerbiVisualsApi.extensibility.visual.IVisualHost;
   private markers: L.Marker[] = [];
   private selectionIds: ISelectionId[] = [];
+  private markerClusterGroup: L.MarkerClusterGroup;
   private baseMapLayer: L.GeoJSON;
-  private choroplethLayer: L.GeoJSON;
   private disputedBordersLayer: L.GeoJSON;
-  private colorScale: (value: number) => string;
-  private choroplethSettings: {
-    showChoropleth: boolean;
-    colorScheme: string;
-  };
   private tooltipDiv: HTMLElement;
   private emptyStateDiv: HTMLElement;
+  private loaderDiv: HTMLElement;
   private currentSelection: ISelectionId[] = [];
   private persistentSelection: ISelectionId[] = [];
-  private powerBIChoroplethData: PowerBIChoroplethData[] = [];
   private currentDataView: DataView;
+  private settings: VisualFormattingSettingsModel;
+  private geoJsonFeatures: any[] = []; // Store GeoJSON features for gaul_code lookup
+  private choroplethLayer: L.GeoJSON<any> | null = null; // Choropleth layer for highlighting matching regions
+  private isLoading: boolean = false;
+  private loadingOperations: Set<string> = new Set();
+  private cachedAdminCodes: string[] = []; // Cache admin codes to avoid repeated processing
+  private mapLoaded: boolean = false; // Track if map is fully loaded
+  private debugLocationLogCount: number = 0; // Limit noisy debug logs
+  private debugLocationValueLogCount: number = 0; // Limit raw value logs
 
   constructor(options: VisualConstructorOptions) {
     this.target = options.element;
     this.host = options.host;
     this.selectionManager = this.host.createSelectionManager();
 
-    // Initialize choropleth settings
-    this.choroplethSettings = {
-      showChoropleth: true,
-      colorScheme: "Viridis",
-    };
-
-    // Initialize color scale
-    this.colorScale = this.createColorScale();
+    // Initialize settings
+    this.settings = new VisualFormattingSettingsModel();
 
     const mapElement = document.createElement("div");
     mapElement.id = "map";
@@ -140,10 +109,53 @@ export class Visual implements IVisual {
     this.emptyStateDiv.innerHTML = `No distribution information available`;
     this.target.appendChild(this.emptyStateDiv);
 
+    // Create loader div
+    this.loaderDiv = document.createElement("div");
+    this.loaderDiv.className = "loader";
+    this.loaderDiv.style.cssText = `
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 10000;
+      background: rgba(255, 255, 255, 0.9);
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      display: none;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      font-size: 14px;
+      color: #333;
+      text-align: center;
+    `;
+    this.loaderDiv.innerHTML = `
+      <div style="margin-bottom: 10px;">
+        <div style="
+          width: 24px;
+          height: 24px;
+          border: 3px solid #f3f3f3;
+          border-top: 3px solid #3498db;
+          border-radius: 50%;
+          animation: spin 1s linear infinite;
+          margin: 0 auto;
+        "></div>
+      </div>
+      Loading map data...
+      <style>
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      </style>
+    `;
+    this.target.appendChild(this.loaderDiv);
+
     this.map = L.map(mapElement, {
       zoomControl: false,
       attributionControl: false,
       worldCopyJump: true,
+      maxZoom: 5,
+      minZoom: 1,
     }).setView([20, 0], 2);
 
     // Add zoom control to top right
@@ -164,7 +176,6 @@ export class Visual implements IVisual {
         event.originalEvent &&
         event.originalEvent.target === this.map.getContainer()
       ) {
-        console.log("Map clicked - clearing selections");
         this.showOnlyCurrentContextMarkers();
       }
     });
@@ -176,18 +187,52 @@ export class Visual implements IVisual {
         this.onEachBaseMapFeature(feature, layer),
     });
 
-    // Initialize choropleth layer
-    this.choroplethLayer = L.geoJSON(null, {
-      style: (feature) => this.getChoroplethStyle(feature),
-      onEachFeature: (feature, layer) =>
-        this.onEachChoroplethFeature(feature, layer),
-    });
-
     // Initialize disputed borders layer
     this.disputedBordersLayer = L.geoJSON(null, {
       style: (feature) => this.getDisputedBorderStyle(feature),
       onEachFeature: (feature, layer) =>
         this.onEachDisputedBorderFeature(feature, layer),
+    });
+
+    // Initialize choropleth layer for highlighting matching regions
+    this.choroplethLayer = L.geoJSON(null, {
+      style: this.getChoroplethStyle.bind(this),
+      onEachFeature: this.onEachChoroplethFeature.bind(this),
+    });
+
+    // Initialize marker cluster group
+    this.markerClusterGroup = L.markerClusterGroup({
+      chunkedLoading: true,
+      maxClusterRadius: 40,
+      spiderfyOnMaxZoom: true,
+      showCoverageOnHover: true,
+      zoomToBoundsOnClick: true,
+      disableClusteringAtZoom: 18,
+      removeOutsideVisibleBounds: true,
+      animate: true,
+      animateAddingMarkers: true,
+      spiderfyShapePositions: function (count: number, centerPoint: L.Point) {
+        const positions = [];
+        const angleStep = (2 * Math.PI) / count;
+        const angle = ((count % 2) * angleStep) / 2;
+        for (let i = 0; i < count; i++) {
+          const angle2 = angle + i * angleStep;
+          const x = Math.cos(angle2) * 20;
+          const y = Math.sin(angle2) * 20;
+          positions.push(new L.Point(centerPoint.x + x, centerPoint.y + y));
+        }
+        return positions;
+      },
+    });
+
+    // Add cluster event handlers
+    this.markerClusterGroup.on("clusterclick", (e) => {
+      this.handleClusterClick(e);
+    });
+
+    this.markerClusterGroup.on("animationend", () => {
+      // Re-apply cluster opacity after clustering animations
+      this.updateClusterOpacity(this.currentSelection || []);
     });
 
     // Hide Leaflet attribution and any flags
@@ -202,13 +247,14 @@ export class Visual implements IVisual {
         justify-content: space-between;
         align-items: center;
         padding: 8px 0;
-        border-bottom: 1px solid #22294B;
         font-family: Arial, sans-serif;
         font-size: 12px;
       }
-      
-      .tooltip-row:last-child {
-        border-bottom: none;
+
+      .tooltip-divider {
+        height: 1px;
+        background-color: #22294B;
+        width: 100%;
       }
       
       .field-name {
@@ -255,87 +301,444 @@ export class Visual implements IVisual {
       .leaflet-pane {
         background: transparent !important;
       }
+      
+      /* Marker cluster styling */
+      .marker-cluster-small {
+        background-color: rgba(249, 177, 18, 0.6);
+        border: 2px solid #F9B112;
+      }
+      
+      .marker-cluster-small div {
+        background-color: #F9B112;
+        color: white;
+        font-weight: bold;
+        font-size: 11px;
+        border-radius: 50%;
+        width: 30px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      
+      .marker-cluster-medium {
+        background-color: rgba(249, 177, 18, 0.7);
+        border: 2px solid #F9B112;
+      }
+      
+      .marker-cluster-medium div {
+        background-color: #F9B112;
+        color: white;
+        font-weight: bold;
+        font-size: 12px;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      
+      .marker-cluster-large {
+        background-color: rgba(249, 177, 18, 0.8);
+        border: 2px solid #22294d;
+      }
+      
+      .marker-cluster-large div {
+        background-color: #F9B112;
+        color: white;
+        font-weight: bold;
+        font-size: 13px;
+        border-radius: 50%;
+        width: 50px;
+        height: 50px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      
+      .marker-cluster-small:hover,
+      .marker-cluster-medium:hover,
+      .marker-cluster-large:hover {
+        background-color: rgba(249, 177, 18, 0.8);
+        border-color: #455E6F;
+      }
     `;
     document.head.appendChild(style);
 
-    // Load base map and disputed borders
-    this.loadBaseMap();
-    this.loadDisputedBorders();
+    // Disputed borders will be loaded from URL if provided in settings
 
     // Setup custom zoom controls
     this.setupZoomControls();
   }
 
-  private createColorScale(): (value: number) => string {
-    const colorSchemes = {
-      YlOrRd: [
-        "#ffffb2",
-        "#fed976",
-        "#feb24c",
-        "#fd8d3c",
-        "#fc4e2a",
-        "#e31a1c",
-        "#b10026",
-      ],
-      Blues: [
-        "#f7fbff",
-        "#deebf7",
-        "#c6dbef",
-        "#9ecae1",
-        "#6baed6",
-        "#3182bd",
-        "#08519c",
-      ],
-      Greens: [
-        "#f7fcf5",
-        "#e5f5e0",
-        "#c7e9c0",
-        "#a1d99b",
-        "#74c476",
-        "#41ab5d",
-        "#238b45",
-      ],
-      Reds: [
-        "#fff5f0",
-        "#fee0d2",
-        "#fcbba1",
-        "#fc9272",
-        "#fb6a4a",
-        "#ef3b2c",
-        "#cb181d",
-      ],
-      Viridis: [
-        "#440154",
-        "#482878",
-        "#3e4989",
-        "#31688e",
-        "#26828e",
-        "#1f9e89",
-        "#35b779",
-        "#6ece58",
-        "#b5de2b",
-        "#fde725",
-      ],
-    };
+  // Helper: build tooltip content with optional dividers after odd rows when > 2 rows
+  private buildTooltipWithOddDividers(rows: string[]): string {
+    const parts: string[] = [];
+    const shouldInsertDividers = rows.length > 2;
+    for (let i = 0; i < rows.length; i++) {
+      parts.push(rows[i]);
+      // Insert divider after even-numbered rows (1-based: after rows 2,4,6,...) but not after the last row
+      if (shouldInsertDividers && i % 2 === 1 && i < rows.length - 1) {
+        parts.push('<div class="tooltip-divider"></div>');
+      }
+    }
+    return parts.join("");
+  }
 
-    const colors =
-      colorSchemes[
-        this.choroplethSettings.colorScheme as keyof typeof colorSchemes
-      ] || colorSchemes.Viridis;
+  // Helper: get column index by data role
+  private getColumnIndexByRole(columns: any[], roleName: string): number {
+    return columns.findIndex(
+      (col) => col.roles && (col.roles as any)[roleName]
+    );
+  }
 
-    return (value: number): string => {
-      if (value === null || value === undefined || isNaN(value)) {
-        return colors[0];
+  // Helper: check if marker's Ref ID exists in the Ref ID measure string
+  private isMarkerRefIdInMeasure(
+    markerRefId: any,
+    refIdMeasureString: string
+  ): boolean {
+    if (!markerRefId || !refIdMeasureString) {
+      return true; // If no measure string, show all markers
+    }
+
+    // Convert marker Ref ID to string and trim
+    const markerRefIdStr = String(markerRefId).trim();
+
+    // Split the measure string by comma and check if marker Ref ID exists
+    const refIdList = refIdMeasureString
+      .split(",")
+      .map((id) => String(id).trim());
+
+    return refIdList.includes(markerRefIdStr);
+  }
+
+  // Helper: parse a single location field supporting JSON or delimited strings
+  private parseLocationField(value: any): {
+    latitude?: number;
+    longitude?: number;
+    adminCode?: string;
+    obsId?: string;
+    country?: string;
+    refId?: string;
+  } {
+    if (value === null || value === undefined) return {};
+    const raw = String(value).trim();
+    if (!raw || raw === "NA") return {};
+
+    if (this.debugLocationLogCount < 20) {
+      try {
+      } catch {}
+    }
+
+    // Try JSON first
+    try {
+      const obj = JSON.parse(raw);
+      const lat = parseFloat(
+        String((obj as any).lat ?? (obj as any).latitude ?? (obj as any).y)
+      );
+      const lng = parseFloat(
+        String(
+          (obj as any).lng ??
+            (obj as any).long ??
+            (obj as any).longitude ??
+            (obj as any).x
+        )
+      );
+      const admin =
+        (obj as any).admin ??
+        (obj as any).adminCode ??
+        (obj as any).gaul_code ??
+        (obj as any).code;
+      const obsId =
+        (obj as any).obsId ?? (obj as any).obs_id ?? (obj as any).obs;
+      const country =
+        (obj as any).country ??
+        (obj as any).countryName ??
+        (obj as any).country_name;
+
+      const result: any = {};
+      if (!isNaN(lat)) result.latitude = lat;
+      if (!isNaN(lng)) result.longitude = lng;
+      if (admin !== undefined && admin !== null && String(admin) !== "") {
+        result.adminCode = String(admin);
+      }
+      if (obsId !== undefined && obsId !== null && String(obsId) !== "") {
+        result.obsId = String(obsId);
+      }
+      if (country !== undefined && country !== null && String(country) !== "") {
+        result.country = String(country);
+      }
+      if (this.debugLocationLogCount < 20) {
+        try {
+          this.debugLocationLogCount++;
+        } catch {}
+      }
+      return result;
+    } catch (_) {
+      // Not JSON, continue
+    }
+
+    // Support common delimiters: comma, pipe, semicolon, space
+    const parts = raw.split(/,/);
+    if (parts.length >= 2) {
+      let latStr: string | undefined;
+      let lngStr: string | undefined;
+      let admin: string | undefined;
+      let obsId: string | undefined;
+      let country: string | undefined;
+      let refId: string | undefined;
+
+      // Check if we have the pattern refId,lat,lng,admin,obsId,country (6+ parts with commas)
+      if (parts.length >= 6 && /,/.test(raw)) {
+        // Treat as: refId, lat, lng, admin, obsId, country
+        refId = parts[0] && parts[0].trim() !== "" ? parts[0] : undefined;
+        latStr = parts[1] && parts[1].trim() !== "" ? parts[1] : undefined;
+        lngStr = parts[2] && parts[2].trim() !== "" ? parts[2] : undefined;
+        admin = parts[3] && parts[3].trim() !== "" ? parts[3] : undefined;
+        obsId = parts[4] && parts[4].trim() !== "" ? parts[4] : undefined;
+        country = parts[5] && parts[5].trim() !== "" ? parts[5] : undefined;
+
+        if (this.debugLocationLogCount < 20) {
+          try {
+            this.debugLocationLogCount++;
+          } catch {}
+        }
+      }
+      // Check if we have the pattern refId,lat,lng,admin (4+ parts with commas)
+      else if (parts.length >= 4 && /,/.test(raw)) {
+        // Treat as: refId, lat, lng, admin
+        refId = parts[0] && parts[0].trim() !== "" ? parts[0] : undefined;
+        latStr = parts[1] && parts[1].trim() !== "" ? parts[1] : undefined;
+        lngStr = parts[2] && parts[2].trim() !== "" ? parts[2] : undefined;
+        admin = parts[3] && parts[3].trim() !== "" ? parts[3] : undefined;
+
+        if (this.debugLocationLogCount < 20) {
+          try {
+            this.debugLocationLogCount++;
+          } catch {}
+        }
+      } else {
+        // Treat as: lat, lng, admin
+        latStr = parts[0] && parts[0].trim() !== "" ? parts[0] : undefined;
+        lngStr = parts[1] && parts[1].trim() !== "" ? parts[1] : undefined;
+        admin = parts[2] && parts[2].trim() !== "" ? parts[2] : undefined;
       }
 
-      const clampedValue = Math.max(0, Math.min(1, value));
-      const index = Math.min(
-        Math.floor(clampedValue * (colors.length - 1)),
-        colors.length - 1
-      );
+      const lat = latStr ? parseFloat(latStr) : NaN;
+      const lng = lngStr ? parseFloat(lngStr) : NaN;
+      const result: any = {};
+      if (!isNaN(lat)) result.latitude = lat;
+      if (!isNaN(lng)) result.longitude = lng;
+      if (admin !== undefined && admin !== null && String(admin) !== "") {
+        result.adminCode = String(admin);
+      }
+      if (obsId !== undefined && obsId !== null && String(obsId) !== "") {
+        result.obsId = String(obsId);
+      }
+      if (country !== undefined && country !== null && String(country) !== "") {
+        result.country = String(country);
+      }
+      // Add refId if it was extracted
+      if (
+        typeof refId !== "undefined" &&
+        refId !== null &&
+        String(refId) !== ""
+      ) {
+        result.refId = String(refId);
+      }
+      if (this.debugLocationLogCount < 20) {
+        try {
+          this.debugLocationLogCount++;
+        } catch {}
+      }
+      return result;
+    }
 
-      return colors[index];
-    };
+    // Edge case: admin-only with delimiters (e.g., "472,,,235")
+    if (parts.length >= 4) {
+      const admin = parts[3] && parts[3].trim() !== "" ? parts[3] : undefined;
+      const obsId = parts[4] && parts[4].trim() !== "" ? parts[4] : undefined;
+      const country = parts[5] && parts[5].trim() !== "" ? parts[5] : undefined;
+
+      if (admin !== undefined && admin !== null && String(admin) !== "") {
+        const result: any = { adminCode: String(admin) };
+        if (obsId !== undefined && obsId !== null && String(obsId) !== "") {
+          result.obsId = String(obsId);
+        }
+        if (
+          country !== undefined &&
+          country !== null &&
+          String(country) !== ""
+        ) {
+          result.country = String(country);
+        }
+        if (this.debugLocationLogCount < 20) {
+          try {
+            this.debugLocationLogCount++;
+          } catch {}
+        }
+        return result;
+      }
+    }
+
+    // Try labeled patterns like "lat: .., lon: .., admin: .., obsId: .., country: .."
+    const labeledLatMatch = raw.match(
+      /(lat|latitude|y)\s*[:=]\s*(-?\d+(?:\.\d+)?)/i
+    );
+    const labeledLngMatch = raw.match(
+      /(lng|long|longitude|x)\s*[:=]\s*(-?\d+(?:\.\d+)?)/i
+    );
+    const labeledAdminMatch = raw.match(
+      /(admin|adminCode|gaul[_\s]*code|code)\s*[:=]\s*([^,;|\s]+)/i
+    );
+    const labeledObsIdMatch = raw.match(
+      /(obsId|obs_id|obs)\s*[:=]\s*([^,;|\s]+)/i
+    );
+    const labeledCountryMatch = raw.match(
+      /(country|countryName|country_name)\s*[:=]\s*([^,;|\s]+)/i
+    );
+
+    if (labeledLatMatch || labeledLngMatch) {
+      const result: any = {};
+      if (labeledLatMatch) {
+        const lat = parseFloat(labeledLatMatch[2]);
+        if (!isNaN(lat)) result.latitude = lat;
+      }
+      if (labeledLngMatch) {
+        const lng = parseFloat(labeledLngMatch[2]);
+        if (!isNaN(lng)) result.longitude = lng;
+      }
+      if (labeledAdminMatch) {
+        const admin = labeledAdminMatch[2];
+        if (admin !== undefined && admin !== null && String(admin) !== "") {
+          result.adminCode = String(admin);
+        }
+      }
+      if (labeledObsIdMatch) {
+        const obsId = labeledObsIdMatch[2];
+        if (obsId !== undefined && obsId !== null && String(obsId) !== "") {
+          result.obsId = String(obsId);
+        }
+      }
+      if (labeledCountryMatch) {
+        const country = labeledCountryMatch[2];
+        if (
+          country !== undefined &&
+          country !== null &&
+          String(country) !== ""
+        ) {
+          result.country = String(country);
+        }
+      }
+      if (this.debugLocationLogCount < 20) {
+        try {
+          this.debugLocationLogCount++;
+        } catch {}
+      }
+      return result;
+    }
+
+    // As a last resort, extract first two numbers in the string as lat/lng
+    // BUT ONLY when there are no delimiters present, to avoid misreading admin-only strings
+    if (!/[|;,]/.test(raw)) {
+      const numberMatches = raw.match(/-?\d+(?:\.\d+)?/g);
+      if (numberMatches && numberMatches.length >= 2) {
+        const lat = parseFloat(numberMatches[0]);
+        const lng = parseFloat(numberMatches[1]);
+        const result: any = {};
+        if (!isNaN(lat) && lat >= -90 && lat <= 90) result.latitude = lat;
+        if (!isNaN(lng) && lng >= -180 && lng <= 180) result.longitude = lng;
+        if (this.debugLocationLogCount < 20) {
+          try {
+            this.debugLocationLogCount++;
+          } catch {}
+        }
+        return result;
+      }
+    }
+
+    // Fallback: single admin code
+    const fallback = { adminCode: raw } as any;
+    if (this.debugLocationLogCount < 20) {
+      try {
+        this.debugLocationLogCount++;
+      } catch {}
+    }
+    return fallback;
+  }
+
+  // Helper: extract lat/lng/admin/obsId/country for a row, preferring explicit roles over combined location
+  private getLatLngAdminForRow(
+    row: any[],
+    columns: any[]
+  ): {
+    latitude?: number;
+    longitude?: number;
+    adminCode?: string;
+    obsId?: string;
+    country?: string;
+    refId?: string;
+  } {
+    const latIdx = this.getColumnIndexByRole(columns, "latitude");
+    const lngIdx = this.getColumnIndexByRole(columns, "longitude");
+    const adminIdx = this.getColumnIndexByRole(columns, "adminCode");
+    const locationIdx = this.getColumnIndexByRole(columns, "location");
+
+    const result: any = {};
+
+    if (latIdx >= 0 && row[latIdx] !== undefined && row[latIdx] !== null) {
+      const lat = parseFloat(String(row[latIdx]));
+      if (!isNaN(lat)) result.latitude = lat;
+    }
+    if (lngIdx >= 0 && row[lngIdx] !== undefined && row[lngIdx] !== null) {
+      const lng = parseFloat(String(row[lngIdx]));
+      if (!isNaN(lng)) result.longitude = lng;
+    }
+    if (
+      adminIdx >= 0 &&
+      row[adminIdx] !== undefined &&
+      row[adminIdx] !== null
+    ) {
+      const admin = String(row[adminIdx]);
+      if (admin && admin !== "undefined" && admin !== "null")
+        result.adminCode = admin;
+    }
+
+    if (
+      result.latitude === undefined ||
+      result.longitude === undefined ||
+      result.adminCode === undefined
+    ) {
+      if (locationIdx >= 0) {
+        if (this.debugLocationValueLogCount < 50) {
+          try {
+            const colName = columns[locationIdx]?.displayName || "location";
+            this.debugLocationValueLogCount++;
+          } catch {}
+        }
+        const parsed = this.parseLocationField(row[locationIdx]);
+        if (result.latitude === undefined && parsed.latitude !== undefined)
+          result.latitude = parsed.latitude;
+        if (result.longitude === undefined && parsed.longitude !== undefined)
+          result.longitude = parsed.longitude;
+        if (result.adminCode === undefined && parsed.adminCode !== undefined)
+          result.adminCode = parsed.adminCode;
+        if (result.obsId === undefined && parsed.obsId !== undefined)
+          result.obsId = parsed.obsId;
+        if (result.country === undefined && parsed.country !== undefined)
+          result.country = parsed.country;
+        if (result.refId === undefined && parsed.refId !== undefined)
+          result.refId = parsed.refId;
+        if (this.debugLocationLogCount < 20) {
+          try {
+            this.debugLocationLogCount++;
+          } catch {}
+        }
+      }
+    }
+
+    return result;
   }
 
   private getBaseMapStyle() {
@@ -344,7 +747,7 @@ export class Visual implements IVisual {
       weight: 0.5,
       opacity: 1,
       color: "#666666",
-      fillOpacity: 0.3,
+      fillOpacity: 1,
     };
   }
 
@@ -360,7 +763,6 @@ export class Visual implements IVisual {
   // Performance monitoring helper
   private logPerformance(operation: string, startTime: number) {
     const duration = performance.now() - startTime;
-    console.log(`⚡ ${operation} completed in ${duration.toFixed(2)}ms`);
     return duration;
   }
 
@@ -368,8 +770,199 @@ export class Visual implements IVisual {
   private resetToDefaultView() {
     if (this.map) {
       this.map.setView([20, 0], 2);
-      console.log("🗺️ Map reset to default view: zoom level 2");
     }
+  }
+
+  // Handle cluster click event
+  private handleClusterClick(e: any) {
+    const cluster = e.layer;
+    const currentZoom = this.map.getZoom();
+    const maxZoom = this.map.getMaxZoom();
+
+    // Check if zooming to bounds would exceed max zoom
+    if (currentZoom >= maxZoom) {
+      // Get all child markers from the cluster
+      const childMarkers = cluster.getAllChildMarkers();
+
+      if (childMarkers.length > 0) {
+        // Group markers by country and count ObsIDs
+        const countryData = this.groupMarkersByCountry(childMarkers);
+
+        // Create and show tooltip
+        const tooltipContent = this.buildClusterTooltipContent(countryData);
+        this.showTooltip(tooltipContent, e.latlng);
+
+        // Prevent default cluster behavior
+        e.originalEvent.preventDefault();
+        e.originalEvent.stopPropagation();
+      }
+    }
+  }
+
+  // Group markers by country using adminCode data
+  private groupMarkersByCountry(
+    markers: L.Marker[]
+  ): Map<string, { countryName: string; obsIds: string[] }> {
+    const countryMap = new Map<
+      string,
+      { countryName: string; obsIds: string[] }
+    >();
+
+    // Handle table data (primary format)
+    if (
+      this.currentDataView?.table?.columns &&
+      this.currentDataView?.table?.rows
+    ) {
+      const columns = this.currentDataView.table.columns;
+
+      // Get the original row data for each marker
+      markers.forEach((marker) => {
+        const markerIndex = this.markers.indexOf(marker);
+
+        if (
+          markerIndex >= 0 &&
+          markerIndex < this.currentDataView.table.rows.length
+        ) {
+          const row = this.currentDataView.table.rows[markerIndex];
+
+          // Use the same logic as the rest of the code to get admin code, obsId, and country
+          const info = this.getLatLngAdminForRow(row, columns);
+          const adminCode = info.adminCode;
+          const obsId = info.obsId;
+          const country = info.country;
+
+          // Skip markers without country information
+          if (!country) {
+            return;
+          }
+
+          // Use country name as the grouping key
+          const groupKey = country;
+
+          if (countryMap.has(groupKey)) {
+            // Add the ObsID if available
+            if (obsId) {
+              countryMap.get(groupKey)!.obsIds.push(obsId);
+            } else {
+              // Add a placeholder for markers without ObsID data
+              countryMap
+                .get(groupKey)!
+                .obsIds.push(`Marker ${markerIndex + 1}`);
+            }
+          } else {
+            countryMap.set(groupKey, {
+              countryName: country,
+              obsIds: obsId ? [obsId] : [`Marker ${markerIndex + 1}`],
+            });
+          }
+        }
+      });
+    }
+    // Handle categorical data (fallback)
+    else if (this.currentDataView?.categorical?.categories) {
+      markers.forEach((marker, index) => {
+        const markerIndex = this.markers.indexOf(marker);
+
+        if (markerIndex >= 0) {
+          // Get location info and refId from the marker's stored data
+          const locationInfo = (marker as any).locationInfo;
+          const refId = (marker as any).refId;
+
+          if (locationInfo) {
+            const obsId = locationInfo.obsId;
+            const country = locationInfo.country;
+
+            // Skip markers without country information
+            if (!country) {
+              return;
+            }
+
+            // Use country name as the grouping key
+            const groupKey = country;
+
+            if (countryMap.has(groupKey)) {
+              // Add the ObsID if available
+              if (obsId) {
+                countryMap.get(groupKey)!.obsIds.push(obsId);
+              } else {
+                // Add a placeholder for markers without ObsID data
+                countryMap
+                  .get(groupKey)!
+                  .obsIds.push(`Marker ${markerIndex + 1}`);
+              }
+            } else {
+              countryMap.set(groupKey, {
+                countryName: country,
+                obsIds: obsId ? [obsId] : [`Marker ${markerIndex + 1}`],
+              });
+            }
+          }
+        }
+      });
+      return countryMap;
+    }
+
+    // Note: Removed legacy duplicate table processing to avoid double counting
+
+    return countryMap;
+  }
+
+  // Get country name from admin code using GeoJSON features
+  private getCountryNameFromAdminCode(adminCode: string): string | null {
+    if (!this.geoJsonFeatures || this.geoJsonFeatures.length === 0) {
+      return null;
+    }
+
+    const feature = this.geoJsonFeatures.find((feature) => {
+      const gaulCode = feature.properties?.gaul_code;
+      return gaulCode && String(gaulCode) === adminCode;
+    });
+
+    if (feature) {
+      return (
+        feature.properties?.gaul0_name ||
+        feature.properties?.disp_en ||
+        feature.properties?.name ||
+        null
+      );
+    }
+
+    return null;
+  }
+
+  // Build cluster tooltip content
+  private buildClusterTooltipContent(
+    countryData: Map<string, { countryName: string; obsIds: string[] }>
+  ): string {
+    if (countryData.size === 0) {
+      return '<div class="tooltip-row"><span class="field-name">No data available</span></div>';
+    }
+
+    const tooltipParts: string[] = [];
+
+    // Show each country with its ObsID information
+    countryData.forEach((data, adminCode) => {
+      tooltipParts.push(
+        `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${data.countryName}</span></div>`
+      );
+
+      // Ensure unique ObsIDs to avoid repeat entries
+      const uniqueObsIds = Array.from(new Set(data.obsIds));
+
+      if (uniqueObsIds.length === 1) {
+        // Show actual ObsID when count is 1
+        tooltipParts.push(
+          `<div class="tooltip-row"><span class="field-name">Obs</span><span class="field-value">${uniqueObsIds[0]}</span></div>`
+        );
+      } else {
+        // Show count when more than 1
+        tooltipParts.push(
+          `<div class="tooltip-row"><span class="field-name">Obs Count</span><span class="field-value">${uniqueObsIds.length}</span></div>`
+        );
+      }
+    });
+
+    return this.buildTooltipWithOddDividers(tooltipParts);
   }
 
   // Override zoom controls to respect our desired zoom level
@@ -385,10 +978,10 @@ export class Visual implements IVisual {
         if (zoomInButton) {
           zoomInButton.addEventListener("click", (e) => {
             const currentZoom = this.map.getZoom();
-            if (currentZoom >= 2) {
-              // If we're at or above zoom level 2, reset to 2
+            if (currentZoom >= 5) {
+              // If we're at or above zoom level 5, reset to 5
               setTimeout(() => {
-                this.map.setZoom(2);
+                this.map.setZoom(5);
               }, 100);
             }
           });
@@ -408,221 +1001,636 @@ export class Visual implements IVisual {
       this.baseMapLayer.addData(geoData);
       this.map.addLayer(this.baseMapLayer);
 
-      // Process for choropleth
-      this.processCustomGeoJSONToChoropleth(geoData);
+      // Mark map as loaded
+      this.mapLoaded = true;
+
+      // Load disputed borders from URL only after map is fully loaded
+      setTimeout(() => {
+        this.handleDisputedBordersUrlChange();
+      }, 100);
 
       // Don't fit bounds - keep our desired zoom level 2
       // This prevents the jarring zoom-in-then-zoom-out effect
-      console.log("🗺️ Keeping map at zoom level 2 - no bounds fitting");
 
       this.logPerformance("Map data loading", startTime);
-      console.log(`✅ Map loaded: ${geoData.features?.length || 0} features`);
     } catch (error) {
-      console.error("❌ Map loading error:", error);
       this.map.setView([20, 0], 2);
     }
   }
 
   private loadBaseMap() {
-    console.log("🗺️ Loading map data from custom.geo.json...");
-    this.loadMapData();
+    // Check if user provided a custom base map URL
+    const baseMapUrl = this.settings?.mapSettingsCard?.baseMapUrl?.value;
+
+    if (baseMapUrl && baseMapUrl.trim() !== "") {
+      this.hideBaseMapMessage();
+      this.loadMapDataFromUrl(baseMapUrl);
+
+      // Add markers to map now that base map is loaded
+      if (
+        this.markers.length > 0 &&
+        !this.map.hasLayer(this.markerClusterGroup)
+      ) {
+        this.markerClusterGroup.addTo(this.map);
+      }
+    } else {
+      // Remove markers from map if no URL
+      if (this.map.hasLayer(this.markerClusterGroup)) {
+        this.map.removeLayer(this.markerClusterGroup);
+      }
+      this.showBaseMapMessage();
+    }
   }
 
-  private processCustomGeoJSONToChoropleth(geoData: any) {
-    const processingStartTime = performance.now();
+  private async loadDisputedBordersFromUrl(url: string) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const geoData = await response.json();
 
-    if (!geoData.features || !Array.isArray(geoData.features)) {
-      console.warn("No features found in custom.geo.json");
-      this.powerBIChoroplethData = [];
+      if (!geoData.type || !geoData.features) {
+        throw new Error("Invalid GeoJSON format - missing type or features");
+      }
+
+      if (this.disputedBordersLayer) {
+        this.disputedBordersLayer.clearLayers();
+      }
+
+      this.disputedBordersLayer.addData(geoData as any);
+
+      if (!this.map.hasLayer(this.disputedBordersLayer)) {
+        this.disputedBordersLayer.addTo(this.map);
+      }
+    } catch (error) {
+      // If URL fails, just clear the layer and don't show anything
+      if (this.disputedBordersLayer) {
+        this.disputedBordersLayer.clearLayers();
+        if (this.map.hasLayer(this.disputedBordersLayer)) {
+          this.map.removeLayer(this.disputedBordersLayer);
+        }
+      }
+    }
+  }
+
+  private handleDisputedBordersUrlChange() {
+    // Only proceed if map is fully loaded
+    if (!this.mapLoaded) {
       return;
     }
 
-    console.log(
-      `🔄 Processing ${geoData.features.length} features for choropleth...`
-    );
+    const currentUrl =
+      this.settings?.mapSettingsCard?.disputedBordersUrl?.value;
 
-    // Pre-allocate array for better performance
-    this.powerBIChoroplethData = new Array(geoData.features.length);
-    let processedCount = 0;
-
-    // Use for loop instead of forEach for better performance
-    for (let index = 0; index < geoData.features.length; index++) {
-      const feature = geoData.features[index];
-
-      try {
-        if (feature.geometry && feature.properties) {
-          const properties = feature.properties;
-
-          // Optimized property access with fallbacks
-          const choroplethData: PowerBIChoroplethData = {
-            adminCode:
-              feature.properties?.adminCode ||
-              feature.properties?.gaul_code ||
-              feature.properties?.gaul0_code ||
-              index,
-
-            geometry: feature.geometry,
-            choroplethValue:
-              feature.properties?.value ||
-              feature.properties?.choropleth_value ||
-              0, // No artificial value - let it use neutral styling
-            countryName:
-              feature.properties?.name ||
-              feature.properties?.countryName ||
-              feature.properties?.gaul0_name ||
-              `Feature ${index}`,
-            isoCode:
-              feature.properties?.iso3_code ||
-              feature.properties?.isoCode ||
-              "",
-            continent: feature.properties?.continent || "",
-            tooltipData: new Map(),
-            choroplethTooltipData: new Map(),
-          };
-
-          // Only add non-empty properties to tooltip data for performance
-          for (const [key, value] of Object.entries(properties)) {
-            if (value != null && value !== "") {
-              choroplethData.tooltipData.set(key, value);
-            }
-          }
-
-          this.powerBIChoroplethData[index] = choroplethData;
-          processedCount++;
-
-          // Log first few features for debugging
-          if (index < 3) {
-            console.log(
-              `✅ Processed feature ${index}: ${choroplethData.countryName}`
-            );
+    if (!(this as any).lastDisputedBordersUrl) {
+      (this as any).lastDisputedBordersUrl = currentUrl || "";
+      if (currentUrl && currentUrl.trim() !== "") {
+        this.loadDisputedBordersFromUrl(currentUrl);
+      } else {
+        // Clear layer if no URL provided
+        if (this.disputedBordersLayer) {
+          this.disputedBordersLayer.clearLayers();
+          if (this.map.hasLayer(this.disputedBordersLayer)) {
+            this.map.removeLayer(this.disputedBordersLayer);
           }
         }
-      } catch (error) {
-        console.error(`Error processing feature ${index}:`, error);
-        // Keep the array slot empty for this index
+      }
+      return;
+    }
+    if ((this as any).lastDisputedBordersUrl !== (currentUrl || "")) {
+      (this as any).lastDisputedBordersUrl = currentUrl || "";
+      if (this.disputedBordersLayer) {
+        this.disputedBordersLayer.clearLayers();
+      }
+      if (currentUrl && currentUrl.trim() !== "") {
+        this.loadDisputedBordersFromUrl(currentUrl);
+      } else {
+        // Clear layer if no URL provided
+        if (this.disputedBordersLayer) {
+          this.disputedBordersLayer.clearLayers();
+          if (this.map.hasLayer(this.disputedBordersLayer)) {
+            this.map.removeLayer(this.disputedBordersLayer);
+          }
+        }
+      }
+    }
+  }
+
+  private async loadMapDataFromUrl(url: string) {
+    try {
+      this.showLoader("baseMap");
+      const response = await fetch(url);
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const geoData = await response.json();
+
+      // Validate GeoJSON structure
+      if (!geoData.type || !geoData.features) {
+        throw new Error("Invalid GeoJSON format - missing type or features");
+      }
+
+      // Store GeoJSON features for gaul_code lookup
+      this.geoJsonFeatures = geoData.features;
+
+      // Add to base map layer
+      this.baseMapLayer.addData(geoData);
+      this.map.addLayer(this.baseMapLayer);
+
+      // Mark map as loaded
+      this.mapLoaded = true;
+
+      // Load disputed borders from URL only after map is fully loaded
+      setTimeout(() => {
+        this.handleDisputedBordersUrlChange();
+      }, 100);
+
+      // Force choropleth layer update when both GeoJSON and data are ready
+      this.forceChoroplethUpdate();
+
+      this.hideLoader("baseMap");
+    } catch (error) {
+      this.hideLoader("baseMap");
+      this.showUrlErrorMessage(url, error.message);
+    }
+  }
+
+  private updateSettingsFromPowerBI(options: VisualUpdateOptions) {
+    // Access settings from the dataView metadata
+    const dataView = options.dataViews[0];
+
+    if (dataView && dataView.metadata && dataView.metadata.objects) {
+      const mapSettings = dataView.metadata.objects.mapSettings as any;
+
+      if (mapSettings) {
+        // Base map URL
+        const newBaseUrl = mapSettings.baseMapUrl
+          ? String(mapSettings.baseMapUrl)
+          : "";
+        const currentBaseUrl = this.settings.mapSettingsCard.baseMapUrl.value;
+        this.settings.mapSettingsCard.baseMapUrl.value = newBaseUrl;
+        if (currentBaseUrl !== newBaseUrl) {
+          setTimeout(() => {
+            this.handleBaseMapUrlChange();
+          }, 50);
+        }
+
+        // Disputed borders URL
+        const newDisputedUrl = mapSettings.disputedBordersUrl
+          ? String(mapSettings.disputedBordersUrl)
+          : "";
+        const currentDisputedUrl =
+          this.settings.mapSettingsCard.disputedBordersUrl?.value || "";
+        this.settings.mapSettingsCard.disputedBordersUrl.value = newDisputedUrl;
+        if (currentDisputedUrl !== newDisputedUrl) {
+          setTimeout(() => {
+            this.handleDisputedBordersUrlChange();
+          }, 50);
+        }
+      }
+    }
+  }
+
+  private showBaseMapMessage() {
+    // Clear any existing base map
+    this.baseMapLayer.clearLayers();
+
+    // Show message in the empty state div
+    if (this.emptyStateDiv) {
+      this.emptyStateDiv.innerHTML = `
+        <div style="text-align: center; padding: 20px;">
+          <div style="font-size: 14px; font-weight: bold; margin-bottom: 10px; color: #22294B;">
+            Setup Required
+          </div>
+          <div style="font-size: 12px; color: #666; line-height: 1.6;">
+            <div style="margin-bottom: 8px;"><strong>Step 1:</strong> Add Data field to your visual</div>
+            <div style="margin-bottom: 8px;"><strong>Step 2:</strong> Add a Base Map GeoJSON URL in Map Settings</div>
+            <div style="font-size: 11px; color: #888; margin-top: 10px;">
+              For best results, add your data fields first, then configure the map URL.
+            </div>
+          </div>
+        </div>
+      `;
+      this.showEmptyState();
+    }
+  }
+
+  private hideBaseMapMessage() {
+    this.hideEmptyState();
+  }
+
+  private showUrlRequiredMessage() {
+    // Clear any existing base map
+    this.baseMapLayer.clearLayers();
+
+    // Show message in the empty state div
+    if (this.emptyStateDiv) {
+      this.emptyStateDiv.innerHTML = `
+        <div style="text-align: center; padding: 20px;">
+          <div style="font-size: 14px; font-weight: bold; margin-bottom: 10px; color: #22294B;">
+            Almost Ready!
+          </div>
+          <div style="font-size: 12px; color: #666; line-height: 1.6;">
+            <div style="margin-bottom: 8px;">✅ Data fields added successfully</div>
+            <div style="margin-bottom: 8px;"><strong>Next:</strong> Add a Base Map GeoJSON URL in Map Settings</div>
+            <div style="font-size: 11px; color: #888; margin-top: 10px;">
+              Once you provide the URL, your map and markers will appear.
+            </div>
+          </div>
+        </div>
+      `;
+      this.showEmptyState();
+    }
+  }
+
+  private showNoDataMessage() {
+    // Show message in the empty state div
+    if (this.emptyStateDiv) {
+      this.emptyStateDiv.innerHTML = `
+        <div style="text-align: center; padding: 20px;">
+          <div style="font-size: 12px; font-weight: bold; margin-bottom: 10px; color: #22294B;">
+            No distribution information available
+          </div>
+          
+        </div>
+      `;
+      this.showEmptyState();
+    }
+  }
+
+  private showUrlErrorMessage(url: string, errorMessage: string) {
+    // Clear any existing base map
+    this.baseMapLayer.clearLayers();
+
+    // Show error message in the empty state div
+    if (this.emptyStateDiv) {
+      this.emptyStateDiv.innerHTML = `
+        <div style="text-align: center; padding: 20px;">
+          <div style="font-size: 14px; font-weight: bold; margin-bottom: 10px; color: #d32f2f;">
+            Error Loading Map
+          </div>
+          <div style="font-size: 12px; color: #666; line-height: 1.4; margin-bottom: 10px;">
+            Failed to load GeoJSON from URL:
+          </div>
+          <div style="font-size: 10px; color: #999; word-break: break-all; margin-bottom: 10px;">
+            ${url}
+          </div>
+          <div style="font-size: 11px; color: #d32f2f; font-weight: bold;">
+            ${errorMessage}
+          </div>
+          <div style="font-size: 11px; color: #666; margin-top: 10px;">
+            <strong>Tips:</strong><br/>
+            • Ensure the URL is publicly accessible<br/>
+            • Use direct download links (not Google Drive sharing links)<br/>
+            • Verify the URL contains valid GeoJSON data
+          </div>
+        </div>
+      `;
+      this.showEmptyState();
+    }
+  }
+
+  private handleBaseMapUrlChange() {
+    const currentUrl = this.settings?.mapSettingsCard?.baseMapUrl?.value;
+
+    // Store the current URL to detect changes
+    if (!(this as any).lastBaseMapUrl) {
+      (this as any).lastBaseMapUrl = currentUrl;
+      // Load base map on first run
+      this.loadBaseMap();
+      return;
+    }
+
+    // If URL has changed, reload the base map
+    if ((this as any).lastBaseMapUrl !== currentUrl) {
+      (this as any).lastBaseMapUrl = currentUrl;
+
+      // Clear existing base map layer
+      this.baseMapLayer.clearLayers();
+
+      // Reload base map with new URL
+      this.loadBaseMap();
+    }
+  }
+
+  private checkAdminCodeMatch(adminCode: any): boolean {
+    if (!adminCode || this.geoJsonFeatures.length === 0) {
+      return false;
+    }
+
+    // Convert adminCode to string for comparison
+    const adminCodeStr = String(adminCode);
+
+    // Show first few gaul_code values for debugging
+    this.geoJsonFeatures.slice(0, 5).forEach((feature, index) => {
+      const gaulCode = feature.properties?.gaul_code;
+    });
+
+    // Check if any GeoJSON feature has a matching gaul_code
+    const match = this.geoJsonFeatures.find((feature) => {
+      const gaulCode = feature.properties?.gaul_code;
+      const gaulCodeStr = String(gaulCode);
+      const isMatch = gaulCode && gaulCodeStr === adminCodeStr;
+
+      return isMatch;
+    });
+
+    if (match) {
+      return true;
+    }
+
+    return false;
+  }
+
+  // Choropleth styling method
+  private getChoroplethStyle(feature: any): L.PathOptions {
+    // Since we only add matching features to the choropleth layer, all features should be styled as matches
+    return {
+      fillColor: "#455E6F", // Blue-gray for all choropleth features (they are all matches)
+      weight: 1,
+      opacity: 1,
+      fillOpacity: 1,
+      color: "black", // Black border for all choropleth features
+    };
+  }
+
+  // Choropleth feature handler
+  private onEachChoroplethFeature(feature: any, layer: L.Layer): void {
+    // Use cached admin codes instead of calling getAdminCodesFromData repeatedly
+    const adminCodes = this.cachedAdminCodes;
+    const gaulCode = feature.properties?.gaul0_code;
+    const isMatch = adminCodes.includes(String(gaulCode));
+
+    if (isMatch) {
+      // Get choropleth tooltip data for this region
+      const choroplethTooltipData =
+        this.getChoroplethTooltipDataForRegion(gaulCode);
+      const regionName =
+        feature.properties?.gaul0_name ||
+        feature.properties?.disp_en ||
+        "Unknown Region";
+
+      layer.on("click", (e) => {
+        // Show tooltip on click with choropleth data using same format as markers
+        const tooltipContent = this.buildChoroplethTooltipContent(gaulCode);
+        this.showTooltip(tooltipContent, e.latlng);
+
+        // Stop event propagation to prevent map click
+        L.DomEvent.stopPropagation(e);
+      });
+    }
+  }
+
+  // Get all Admin Codes from current data (with caching)
+  private getAdminCodesFromData(): string[] {
+    // Return cached admin codes if available
+    if (this.cachedAdminCodes.length > 0) {
+      return this.cachedAdminCodes;
+    }
+
+    const adminCodes: string[] = [];
+
+    // Handle table data (primary format)
+    if (
+      this.currentDataView?.table?.columns &&
+      this.currentDataView?.table?.rows
+    ) {
+      const columns = this.currentDataView.table.columns;
+      const tableAdminCodes = this.currentDataView.table.rows
+        .map((row) => this.getLatLngAdminForRow(row, columns).adminCode)
+        .filter((code) => !!code) as string[];
+      adminCodes.push(...tableAdminCodes);
+    }
+    // Handle categorical data (fallback)
+    else if (this.currentDataView?.categorical?.categories) {
+      const locationCategory = this.currentDataView.categorical.categories[0];
+      if (locationCategory && locationCategory.values) {
+        locationCategory.values.forEach((locationValue: any) => {
+          const locationInfo = this.parseLocationField(locationValue);
+          if (locationInfo.adminCode) {
+            adminCodes.push(locationInfo.adminCode);
+          }
+        });
       }
     }
 
-    // Remove any undefined entries and log results
-    this.powerBIChoroplethData = this.powerBIChoroplethData.filter(Boolean);
-    this.logPerformance("Choropleth processing", processingStartTime);
-    console.log(
-      `✅ Choropleth processing complete: ${this.powerBIChoroplethData.length} features processed`
+    // Cache the admin codes
+    this.cachedAdminCodes = adminCodes;
+    return adminCodes;
+  }
+
+  // Get choropleth tooltip data for a specific region (GAUL code)
+  private getChoroplethTooltipDataForRegion(gaulCode: any): string | null {
+    if (
+      !this.currentDataView?.table?.columns ||
+      !this.currentDataView?.table?.rows
+    ) {
+      return null;
+    }
+
+    const columns = this.currentDataView.table.columns;
+    const choroplethTooltipColIndex = columns.findIndex(
+      (col) => col.roles?.choroplethTooltip
     );
 
-    // Additional debugging to see what was actually created
-    if (this.powerBIChoroplethData.length > 0) {
-      console.log("🔍 First few choropleth features created:");
-      this.powerBIChoroplethData.slice(0, 3).forEach((feature, index) => {
-        console.log(
-          `  ${index}: ${feature.countryName} - AdminCode: ${feature.adminCode} - Geometry type: ${feature.geometry?.type}`
+    if (choroplethTooltipColIndex === -1) {
+      return null;
+    }
+
+    // Find the first row that matches this GAUL code
+    const matchingRow = this.currentDataView.table.rows.find((row) => {
+      const info = this.getLatLngAdminForRow(row, columns);
+      return (
+        info.adminCode !== undefined &&
+        String(info.adminCode) === String(gaulCode)
+      );
+    });
+
+    if (matchingRow) {
+      const choroplethTooltipValue = matchingRow[choroplethTooltipColIndex];
+      return choroplethTooltipValue ? String(choroplethTooltipValue) : null;
+    }
+
+    return null;
+  }
+
+  // Build choropleth tooltip content using same format as cluster tooltips
+  private buildChoroplethTooltipContent(gaulCode: any): string {
+    const obsIds: string[] = [];
+    let countryName: string | null = null;
+
+    // Handle table data (primary format)
+    if (
+      this.currentDataView?.table?.columns &&
+      this.currentDataView?.table?.rows
+    ) {
+      const columns = this.currentDataView.table.columns;
+
+      // Find ALL rows that match this GAUL code
+      const matchingRows = this.currentDataView.table.rows.filter((row) => {
+        const info = this.getLatLngAdminForRow(row, columns);
+        return (
+          info.adminCode !== undefined &&
+          String(info.adminCode) === String(gaulCode)
         );
       });
-    } else {
-      console.log(
-        "❌ No choropleth features were created - this is the problem!"
-      );
-    }
-  }
 
-  private getChoroplethStyle(feature: any) {
-    const choroplethValue = feature.properties?.choropleth_value;
-    const adminCode = feature.properties?.adminCode;
-
-    // Check if this is a Power BI feature (has choropleth_value) or base map feature
-    if (choroplethValue !== null && choroplethValue !== undefined) {
-      // This is a Power BI feature - make it #455E6F
-      console.log(
-        `🎨 Applying #455E6F color to Power BI feature with adminCode: ${adminCode}`
-      );
-      return {
-        fillColor: "#455E6F", // #455E6F color for Power BI features
-        weight: 1,
-        opacity: 1,
-        color: "#455E6F", // Same #455E6F for border
-        fillOpacity: 0.8,
-      };
-    } else {
-      // This is a base map feature - keep neutral color
-      console.log(
-        `🎨 Applying neutral color to base map feature with adminCode: ${adminCode}`
-      );
-      return {
-        fillColor: "#F2F2F2", // Light gray for base map
-        weight: 0.5,
-        opacity: 1,
-        color: "#666666",
-        fillOpacity: 0.3,
-      };
-    }
-  }
-
-  private onEachChoroplethFeature(feature: any, layer: L.Layer) {
-    if (feature.properties) {
-      const name =
-        feature.properties.name ||
-        feature.properties.countryName ||
-        "Unknown Region";
-      const value = feature.properties.choropleth_value || "N/A";
-      const countryCode =
-        feature.properties.isoCode || feature.properties.iso3_code || "";
-      const continent = feature.properties.continent || "";
-
-      // Only add click functionality to Power BI features (those with choropleth_value)
-      if (
-        feature.properties.choropleth_value !== null &&
-        feature.properties.choropleth_value !== undefined
-      ) {
-        // This is a Power BI feature - make it interactive
-        layer.on({
-          click: (e) => {
-            const layer = e.target;
-            layer.setStyle({
-              weight: 3,
-              color: "#666",
-              fillOpacity: 0.9,
-            });
-            layer.bringToFront();
-
-            // Show tooltip on click
-            const tooltipContent = this.buildChoroplethTooltipContent(feature);
-            this.showTooltip(tooltipContent, e.latlng);
-
-            // Reset style after 2 seconds
-            setTimeout(() => {
-              this.choroplethLayer.resetStyle(e.target);
-            }, 2000);
-          },
-          mouseover: (e) => {
-            // Change cursor to pointer when hovering over Power BI choropleth
-            const layer = e.target;
-            layer.getElement().style.cursor = "pointer";
-          },
-          mouseout: (e) => {
-            // Reset cursor when leaving Power BI choropleth
-            const layer = e.target;
-            layer.getElement().style.cursor = "";
-          },
-        });
-        console.log(
-          `✅ Added click and hover functionality to Power BI choropleth: ${name}`
+      if (matchingRows.length > 0) {
+        // Get country name from first matching row's location field, or from GeoJSON
+        const firstRowInfo = this.getLatLngAdminForRow(
+          matchingRows[0],
+          columns
         );
-      } else {
-        // This is a base map feature - no click functionality
-        console.log(`ℹ️ Base map choropleth (no click): ${name}`);
+        countryName =
+          firstRowInfo.country ||
+          this.getCountryNameFromAdminCode(String(gaulCode));
+
+        // Collect all ObsIDs for this country from location field
+        matchingRows.forEach((row) => {
+          const info = this.getLatLngAdminForRow(row, columns);
+          if (
+            info.obsId !== undefined &&
+            info.obsId !== null &&
+            info.obsId !== ""
+          ) {
+            obsIds.push(String(info.obsId));
+          }
+        });
       }
     }
+
+    if (obsIds.length === 0) {
+      return `Matched Region (Code: ${gaulCode})`;
+    }
+
+    const tooltipParts: string[] = [];
+
+    // Add country information
+    tooltipParts.push(
+      `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${
+        countryName ||
+        this.getCountryNameFromAdminCode(String(gaulCode)) ||
+        `Country ${gaulCode}`
+      }</span></div>`
+    );
+
+    // Add ObsID information
+    if (obsIds.length === 1) {
+      // Show actual ObsID when count is 1
+      tooltipParts.push(
+        `<div class="tooltip-row"><span class="field-name">Obs</span><span class="field-value">${obsIds[0]}</span></div>`
+      );
+    } else {
+      // Show count when more than 1
+      tooltipParts.push(
+        `<div class="tooltip-row"><span class="field-name">Obs Count</span><span class="field-value">${obsIds.length}</span></div>`
+      );
+    }
+
+    return this.buildTooltipWithOddDividers(tooltipParts);
+  }
+
+  // Update choropleth layer with current data
+  private updateChoroplethLayer(): void {
+    if (!this.choroplethLayer) {
+      return;
+    }
+
+    if (this.geoJsonFeatures.length === 0) {
+      return;
+    }
+
+    // Check if we have data to process
+    if (
+      !this.currentDataView?.table?.rows ||
+      this.currentDataView.table.rows.length === 0
+    ) {
+      return;
+    }
+
+    // Show loader for choropleth processing
+    this.showLoader("choropleth");
+
+    // Clear existing choropleth data
+    this.choroplethLayer.clearLayers();
+
+    // Get Admin Codes from current data (with caching)
+    const adminCodes = this.getAdminCodesFromData();
+
+    // Find matching features and create choropleth polygons
+    const matchingFeatures = this.geoJsonFeatures.filter((feature) => {
+      const gaulCode = feature.properties?.gaul_code;
+      const gaulCodeStr = String(gaulCode);
+
+      const isMatch = adminCodes.includes(gaulCodeStr);
+
+      return isMatch;
+    });
+
+    // Only add choropleth layer to map if we have matching features
+    if (matchingFeatures.length > 0) {
+      this.choroplethLayer.addData({
+        type: "FeatureCollection",
+        features: matchingFeatures,
+      } as any);
+
+      // Add choropleth layer to map if not already added
+      if (!this.map.hasLayer(this.choroplethLayer)) {
+        this.choroplethLayer.addTo(this.map);
+      }
+    } else {
+      // Remove choropleth layer from map if no matches
+      if (this.map.hasLayer(this.choroplethLayer)) {
+        this.map.removeLayer(this.choroplethLayer);
+      }
+    }
+
+    // Hide loader after choropleth processing is complete
+    this.hideLoader("choropleth");
+  }
+
+  // Force choropleth layer update when both GeoJSON and data are ready
+  private forceChoroplethUpdate(): void {
+    if (
+      this.mapLoaded &&
+      this.choroplethLayer &&
+      this.geoJsonFeatures.length > 0 &&
+      this.currentDataView?.table?.rows &&
+      this.currentDataView.table.rows.length > 0
+    ) {
+      this.updateChoroplethLayer();
+    }
+  }
+
+  // Add a method to force URL reload (can be called externally if needed)
+  public reloadBaseMap() {
+    this.handleBaseMapUrlChange();
+  }
+
+  // Method to manually update settings (for debugging)
+  public updateSettingsManually(url: string) {
+    this.settings.mapSettingsCard.baseMapUrl.value = url;
+    this.handleBaseMapUrlChange();
   }
 
   public update(options: VisualUpdateOptions) {
-    console.log("🔄 Visual update started");
     const startTime = performance.now();
 
     if (!options || !options.dataViews || options.dataViews.length === 0) {
-      console.log("⚠️  No data views provided, clearing visual");
       this.clearAllData();
+      // Still try to handle base map URL even with no data
+      this.handleBaseMapUrlChange();
       return;
     }
+
+    // Update settings from Power BI (this works better when data is present)
+    this.updateSettingsFromPowerBI(options);
+
+    // Check if base map URL has changed and reload if necessary
+    this.handleBaseMapUrlChange();
 
     // Store the current data view for marker visibility checks
     this.currentDataView = options.dataViews[0];
@@ -630,106 +1638,64 @@ export class Visual implements IVisual {
     try {
       const dataView: DataView = options.dataViews[0];
 
-      // Reset data when no data
-      if (
-        !dataView ||
-        !dataView.table ||
-        !dataView.table.columns ||
-        !dataView.table.rows
-      ) {
+      // Debug: Log the data structure we're receiving
+
+      // Handle table data format for both location and refId
+      if (dataView.table && dataView.table.columns && dataView.table.rows) {
+        this.processTableData(dataView);
+      } else {
         this.clearAllData();
         this.showEmptyState();
         return;
       }
 
       // Log helpful information about data import
-      console.log("🌍 Power BI Leaflet Visual - Data Import Guide:");
-      console.log(
-        "   • For best results with complex geometries, use JSON import instead of CSV/Excel"
-      );
-      console.log("   • Power BI has a 32,766 character limit for text fields");
-      console.log("   • Choropleth data loaded from Power BI geometryString");
-      console.log(
-        "   • Simple display: Power BI geometry strings shown in red"
-      );
+      // Power BI Leaflet Visual - Data Import Guide:
+      //   • For best results with complex geometries, use JSON import instead of CSV/Excel
+      //   • Power BI has a 32,766 character limit for text fields
+      //   • Choropleth data loaded from Power BI geometryString
+      //   • Simple display: Power BI geometry strings shown in red
 
       // Add comprehensive debugging for the update method
-      console.log("🔍 UPDATE METHOD - Data structure received:", {
-        hasDataView: !!dataView,
-        hasTable: !!dataView.table,
-        hasColumns: !!dataView.table.columns,
-        hasRows: !!dataView.table.rows,
-        totalRows: dataView.table.rows?.length || 0,
-        totalColumns: dataView.table.columns?.length || 0,
-        columnNames:
-          dataView.table.columns?.map((col) => col.displayName) || [],
-        columnRoles:
-          dataView.table.columns?.map((col) => ({
-            name: col.displayName,
-            roles: col.roles,
-          })) || [],
-      });
+      // UPDATE METHOD - Data structure received:
+      //   hasDataView: !!dataView,
+      //   hasTable: !!dataView.table,
+      //   hasColumns: !!dataView.table.columns,
+      //   hasRows: !!dataView.table.rows,
+      //   totalRows: dataView.table.rows?.length || 0,
+      //   totalColumns: dataView.table.columns?.length || 0,
+      //   columnNames: dataView.table.columns?.map((col) => col.displayName) || [],
+      //   columnRoles: dataView.table.columns?.map((col) => ({
+      //     name: col.displayName,
+      //     roles: col.roles,
+      //   })) || [],
 
       // Check if Power BI is filtering the data
       if (dataView.table.rows && dataView.table.rows.length > 0) {
-        console.log("🔍 Data sample check - First row:", {
-          rowData: dataView.table.rows[0],
-          rowKeys: Object.keys(dataView.table.rows[0] || {}),
-          rowValues: Object.values(dataView.table.rows[0] || {}),
-          rowLength: Object.keys(dataView.table.rows[0] || {}).length,
-        });
+        // Data sample check - First row:
+        //   rowData: dataView.table.rows[0],
+        //   rowKeys: Object.keys(dataView.table.rows[0] || {}),
+        //   rowValues: Object.values(dataView.table.rows[0] || {}),
+        //   rowLength: Object.keys(dataView.table.rows[0] || {}).length,
 
         if (dataView.table.rows.length > 1) {
-          console.log("🔍 Data sample check - Second row:", {
-            rowData: dataView.table.rows[1],
-            rowKeys: Object.keys(dataView.table.rows[1] || {}),
-            rowValues: Object.values(dataView.table.rows[1] || {}),
-            rowLength: Object.keys(dataView.table.rows[1] || {}).length,
-          });
+          // Data sample check - Second row:
+          //   rowData: dataView.table.rows[1],
+          //   rowKeys: Object.keys(dataView.table.rows[1] || {}),
+          //   rowValues: Object.values(dataView.table.rows[1] || {}),
+          //   rowLength: Object.keys(dataView.table.rows[1] || {}).length,
         }
       }
 
       // Check for categorical data (markers)
-      console.log("🔍 Categorical data check:", {
-        hasCategorical: !!dataView.categorical,
-        hasSingle: !!dataView.single,
-        hasTable: !!dataView.table,
-        tableRowCount: dataView.table?.rows?.length || 0,
-        tableColumnCount: dataView.table?.columns?.length || 0,
-      });
+      // Categorical data check:
+      //   hasCategorical: !!dataView.categorical,
+      //   hasSingle: !!dataView.single,
+      //   hasTable: !!dataView.table,
+      //   tableRowCount: dataView.table?.rows?.length || 0,
+      //   tableColumnCount: dataView.table?.columns?.length || 0,
 
-      // Process data based on what's available
-      if (
-        dataView.table &&
-        dataView.table.rows &&
-        dataView.table.rows.length > 0
-      ) {
-        const values = dataView.table.rows;
-        const columns = dataView.table.columns;
-
-        // Create selection IDs for markers FIRST
-        this.createSelectionIds(dataView);
-
-        // Process marker data from Power BI (lat/long) AFTER selection IDs are created
-        this.processMarkerData(dataView);
-
-        // Process choropleth data from Power BI (geometryString with embedded properties)
-        this.processChoroplethDataFromPowerBI(dataView);
-
-        console.log("✅ Data processing complete:", {
-          choroplethFeaturesCreated: this.powerBIChoroplethData.length,
-          markersCreated: this.markers.length,
-          adminCodeMatchingEnabled: false,
-        });
-      } else {
-        console.log("⚠️ No table data available");
-        this.clearAllData();
-        this.showEmptyState();
-        return;
-      }
-
-      // Update the visual
-      this.updateChoroplethLayer();
+      // Data processing is handled by processCategoricalData or processTableData methods
 
       // Update markers visibility based on current Power BI filtering
       this.updateMarkersVisibility(this.currentSelection);
@@ -738,140 +1704,414 @@ export class Visual implements IVisual {
       this.performEmptyStateCheck();
 
       const updateDuration = performance.now() - startTime;
-      console.log(
-        `✅ Visual update completed in ${updateDuration.toFixed(
-          2
-        )}ms - Power BI relationship filtering active`
-      );
     } catch (error) {
-      console.error("❌ Error during visual update:", error);
+      // Error during visual update
     }
   }
 
-  private processChoroplethDataFromPowerBI(dataView: DataView) {
-    console.log("🔍 Processing choropleth data from Power BI...");
-    this.powerBIChoroplethData = [];
-
-    if (!dataView.table || !dataView.table.columns || !dataView.table.rows) {
-      console.log("❌ No table data available for choropleth processing");
+  // Process categorical data from two separate datasets (location and refId)
+  private processCategoricalData(dataView: DataView) {
+    if (!dataView.categorical) {
       return;
     }
 
-    const columns = dataView.table.columns;
-    const values = dataView.table.rows;
+    // Clear cached admin codes when processing new data
+    this.cachedAdminCodes = [];
 
-    console.log(
-      `🔍 Processing ${values.length} rows with ${columns.length} columns`
-    );
+    // Get location data from first categorical dataset
+    const locationCategories = dataView.categorical.categories;
 
-    // Find column index for choropleth geometry
-    const geometryColIndex = columns.findIndex(
-      (col) =>
-        col.roles?.choroplethGeometry ||
-        col.displayName === "geometryString" ||
-        col.displayName === "data.geometryString"
-    );
-
-    // Find all tooltip column indices (same as marker tooltip)
-    const tooltipColIndices = columns
-      .map((col, index) => (col.roles?.tooltip ? index : -1))
-      .filter((index) => index !== -1);
-
-    if (geometryColIndex === -1) {
-      console.log("❌ No choropleth geometry column found");
+    if (!locationCategories || locationCategories.length === 0) {
+      this.clearAllData();
+      this.showEmptyState();
       return;
     }
 
-    console.log(
-      `✅ Found choropleth geometry column at index ${geometryColIndex}`
-    );
-
-    if (tooltipColIndices.length > 0) {
-      console.log(
-        `✅ Found ${
-          tooltipColIndices.length
-        } tooltip columns: ${tooltipColIndices
-          .map((i) => columns[i].displayName)
-          .join(", ")}`
+    // Get refId data from table (if available)
+    let refIdData: any[] = [];
+    if (dataView.table && dataView.table.rows) {
+      const refIdColIndex = dataView.table.columns.findIndex(
+        (col) => col.roles?.refId
       );
-    } else {
-      console.log("⚠️ No tooltip columns found");
+      if (refIdColIndex >= 0) {
+        refIdData = dataView.table.rows.map((row) => row[refIdColIndex]);
+      }
     }
 
-    // Process each row - simple approach
-    values.forEach((row, rowIndex) => {
-      try {
-        const geometryString = String(row[geometryColIndex]);
+    const locationCategory = locationCategories[0]; // First dataset
 
-        if (
-          !geometryString ||
-          geometryString === "null" ||
-          geometryString === "undefined"
-        ) {
-          return; // Skip empty rows
+    // Create selection IDs for markers
+    this.createSelectionIdsFromCategorical(dataView);
+
+    // Process markers using categorical data
+    this.processMarkersFromCategoricalWithTable(
+      locationCategory,
+      refIdData,
+      dataView
+    );
+
+    // Force choropleth layer update when both GeoJSON and data are ready
+    this.forceChoroplethUpdate();
+  }
+
+  // Process table data (backward compatibility)
+  private processTableData(dataView: DataView) {
+    if (!dataView.table || !dataView.table.columns || !dataView.table.rows) {
+      this.clearAllData();
+      this.showEmptyState();
+      return;
+    }
+
+    // Clear cached admin codes when processing new data
+    this.cachedAdminCodes = [];
+
+    // Create selection IDs for markers FIRST
+    this.createSelectionIds(dataView);
+
+    // Process marker data from Power BI (lat/long) AFTER selection IDs are created
+    this.processMarkerData(dataView);
+
+    // Force choropleth layer update when both GeoJSON and data are ready
+    this.forceChoroplethUpdate();
+  }
+
+  // Create selection IDs from categorical data
+  private createSelectionIdsFromCategorical(dataView: DataView) {
+    if (!dataView.categorical || !dataView.categorical.categories) {
+      return;
+    }
+
+    const locationCategory = dataView.categorical.categories[0];
+    if (!locationCategory || !locationCategory.values) {
+      return;
+    }
+
+    // Clear existing selection IDs
+    this.selectionIds = [];
+
+    // Create selection IDs for each location value
+    this.selectionIds = locationCategory.values.map((value, index) => {
+      return this.host
+        .createSelectionIdBuilder()
+        .withCategory(locationCategory, index)
+        .createSelectionId();
+    });
+  }
+
+  // Process markers from categorical data
+  private processMarkersFromCategorical(
+    locationCategory: any,
+    refIdCategory: any,
+    dataView: DataView
+  ) {
+    if (!locationCategory || !locationCategory.values) {
+      return;
+    }
+
+    // Clear existing markers
+    this.markers.forEach((marker) => {
+      this.markerClusterGroup.removeLayer(marker);
+    });
+    this.markers = [];
+
+    // Clear the cluster group
+    this.markerClusterGroup.clearLayers();
+
+    // Process each location value
+    locationCategory.values.forEach((locationValue: any, index: number) => {
+      // Parse location field
+      const locationInfo = this.parseLocationField(locationValue);
+
+      // Get refId if available
+      let refId = undefined;
+      if (
+        refIdCategory &&
+        refIdCategory.values &&
+        refIdCategory.values[index]
+      ) {
+        refId = refIdCategory.values[index];
+      }
+
+      // Only create markers for valid coordinates
+      if (
+        locationInfo.latitude !== undefined &&
+        locationInfo.longitude !== undefined &&
+        !isNaN(locationInfo.latitude) &&
+        !isNaN(locationInfo.longitude)
+      ) {
+        const lat = locationInfo.latitude;
+        const lng = locationInfo.longitude;
+
+        // Always use orange color for markers
+        const markerColor = "#F9B112";
+
+        // Create custom marker with dynamic color styling
+        const customMarkerIcon = L.divIcon({
+          className: "custom-marker",
+          html: `
+              <svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12.5 0C5.596 0 0 5.596 0 12.5c0 9.375 12.5 28.5 12.5 28.5s12.5-19.125 12.5-28.5C25 5.596 19.404 0 12.5 0z" fill="${markerColor}"/>
+                <circle cx="12.5" cy="12.5" r="6" fill="white"/>
+              </svg>
+            `,
+          iconSize: [25, 41],
+          iconAnchor: [12, 41],
+          popupAnchor: [1, -34],
+          tooltipAnchor: [16, -28],
+        });
+
+        const marker = L.marker([lat, lng], {
+          icon: customMarkerIcon,
+        });
+
+        // Add selection ID to marker
+        if (this.selectionIds && this.selectionIds[index]) {
+          (marker as any).options.selectionId = this.selectionIds[index];
         }
 
-        console.log(
-          `🔍 Processing row ${rowIndex}: geometry length ${geometryString.length}`
-        );
+        // Store location info and refId for tooltip
+        (marker as any).locationInfo = locationInfo;
+        (marker as any).refId = refId;
 
-        // Parse the geometry string
-        let geometryData;
-        try {
-          geometryData = JSON.parse(geometryString);
-        } catch (parseError) {
-          console.log(
-            `⚠️ Row ${rowIndex}: Could not parse geometry string: ${parseError.message}`
+        // Add click handler for selection
+        marker.on("click", (event) => {
+          // Build tooltip content
+          const tooltipContent = this.buildCategoricalTooltipContent(
+            locationInfo,
+            refId
           );
-          return;
-        }
+          this.showTooltip(tooltipContent, event.latlng);
 
-        if (geometryData && geometryData.type) {
-          // Create choropleth tooltip data map with all tooltip fields (same as marker tooltip)
-          const tooltipDataMap = new Map<string, any>();
+          // Handle selection if selection ID exists
+          if (this.selectionIds && this.selectionIds[index]) {
+            const clickedSelectionId = this.selectionIds[index];
 
-          // Add all tooltip fields from Power BI
-          tooltipColIndices.forEach((colIndex) => {
-            const value = row[colIndex];
-            const columnName = columns[colIndex].displayName;
+            // Check if this marker is already selected
+            const isCurrentlySelected = this.currentSelection.some((id) => {
+              if (!id || !clickedSelectionId) return false;
+              if (id.getKey && clickedSelectionId.getKey) {
+                return id.getKey() === clickedSelectionId.getKey();
+              }
+              if (id.toString && clickedSelectionId.toString) {
+                return id.toString() === clickedSelectionId.toString();
+              }
+              return id === clickedSelectionId;
+            });
 
-            if (
-              value !== null &&
-              value !== undefined &&
-              value !== "" &&
-              value !== "NA"
-            ) {
-              tooltipDataMap.set(columnName, value);
-              console.log(
-                `✅ Added tooltip field for row ${rowIndex}: ${columnName} = ${value}`
-              );
+            if (isCurrentlySelected) {
+              // Deselect the marker
+              this.selectionManager
+                .clear()
+                .then(() => {
+                  this.currentSelection = [];
+                  this.persistentSelection = [];
+                  this.updateMarkersVisibility([]);
+                })
+                .catch((error) => {
+                  // Error clearing selection
+                });
+            } else {
+              // Select the marker
+              this.selectionManager
+                .select(clickedSelectionId)
+                .then((ids: ISelectionId[]) => {
+                  this.currentSelection = ids;
+                  this.persistentSelection = [...ids];
+                  this.updateMarkersVisibility(ids);
+                })
+                .catch((error) => {
+                  // Error selecting marker
+                });
             }
-          });
+          }
 
-          const choroplethData: PowerBIChoroplethData = {
-            adminCode: rowIndex, // Simple index-based admin code
-            geometry: geometryData,
-            choroplethValue: 1, // Simple value for red coloring
-            countryName: `Feature ${rowIndex}`,
-            isoCode: "",
-            continent: "",
-            tooltipData: new Map(),
-            choroplethTooltipData: tooltipDataMap, // Populate with all tooltip fields
-          };
+          L.DomEvent.stopPropagation(event);
+        });
 
-          this.powerBIChoroplethData.push(choroplethData);
-          console.log(
-            `✅ Created choropleth feature ${rowIndex} with type: ${geometryData.type} and ${tooltipDataMap.size} tooltip fields`
-          );
-        }
-      } catch (error) {
-        console.error(`Error processing row ${rowIndex}:`, error);
+        // Add marker to cluster group
+        this.markerClusterGroup.addLayer(marker);
+        this.markers.push(marker);
       }
     });
 
-    console.log(
-      `✅ Created ${this.powerBIChoroplethData.length} choropleth features from Power BI data`
-    );
+    // Only add cluster group to map if base map URL is provided
+    const hasBaseMapUrl =
+      this.settings?.mapSettingsCard?.baseMapUrl?.value?.trim() !== "";
+    if (hasBaseMapUrl && !this.map.hasLayer(this.markerClusterGroup)) {
+      this.markerClusterGroup.addTo(this.map);
+    }
+  }
+
+  // Process markers from categorical data with table refId data
+  private processMarkersFromCategoricalWithTable(
+    locationCategory: any,
+    refIdData: any[],
+    dataView: DataView
+  ) {
+    if (!locationCategory || !locationCategory.values) {
+      return;
+    }
+
+    // Clear existing markers
+    this.markers.forEach((marker) => {
+      this.markerClusterGroup.removeLayer(marker);
+    });
+    this.markers = [];
+
+    // Clear the cluster group
+    this.markerClusterGroup.clearLayers();
+
+    // Process each location value
+    locationCategory.values.forEach((locationValue: any, index: number) => {
+      // Parse location field
+      const locationInfo = this.parseLocationField(locationValue);
+
+      // Get refId from table data if available
+      let refId = undefined;
+      if (refIdData && refIdData[index] !== undefined) {
+        refId = refIdData[index];
+      }
+
+      // Only create markers for valid coordinates
+      if (
+        locationInfo.latitude !== undefined &&
+        locationInfo.longitude !== undefined &&
+        !isNaN(locationInfo.latitude) &&
+        !isNaN(locationInfo.longitude)
+      ) {
+        const lat = locationInfo.latitude;
+        const lng = locationInfo.longitude;
+
+        // Always use orange color for markers
+        const markerColor = "#F9B112";
+
+        // Create custom marker with dynamic color styling
+        const customMarkerIcon = L.divIcon({
+          className: "custom-marker",
+          html: `
+              <svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12.5 0C5.596 0 0 5.596 0 12.5c0 9.375 12.5 28.5 12.5 28.5s12.5-19.125 12.5-28.5C25 5.596 19.404 0 12.5 0z" fill="${markerColor}"/>
+                <circle cx="12.5" cy="12.5" r="6" fill="white"/>
+              </svg>
+            `,
+          iconSize: [25, 41],
+          iconAnchor: [12, 41],
+          popupAnchor: [1, -34],
+          tooltipAnchor: [16, -28],
+        });
+
+        const marker = L.marker([lat, lng], {
+          icon: customMarkerIcon,
+        });
+
+        // Add selection ID to marker
+        if (this.selectionIds && this.selectionIds[index]) {
+          (marker as any).options.selectionId = this.selectionIds[index];
+        }
+
+        // Store location info and refId for tooltip
+        (marker as any).locationInfo = locationInfo;
+        (marker as any).refId = refId;
+
+        // Add click handler for selection
+        marker.on("click", (event) => {
+          // Build tooltip content
+          const tooltipContent = this.buildCategoricalTooltipContent(
+            locationInfo,
+            refId
+          );
+          this.showTooltip(tooltipContent, event.latlng);
+
+          // Handle selection if selection ID exists
+          if (this.selectionIds && this.selectionIds[index]) {
+            const clickedSelectionId = this.selectionIds[index];
+
+            // Check if this marker is already selected
+            const isCurrentlySelected = this.currentSelection.some((id) => {
+              if (!id || !clickedSelectionId) return false;
+              if (id.getKey && clickedSelectionId.getKey) {
+                return id.getKey() === clickedSelectionId.getKey();
+              }
+              if (id.toString && clickedSelectionId.toString) {
+                return id.toString() === clickedSelectionId.toString();
+              }
+              return id === clickedSelectionId;
+            });
+
+            if (isCurrentlySelected) {
+              // Deselect the marker
+              this.selectionManager
+                .clear()
+                .then(() => {
+                  this.currentSelection = [];
+                  this.persistentSelection = [];
+                  this.updateMarkersVisibility([]);
+                })
+                .catch((error) => {
+                  // Error clearing selection
+                });
+            } else {
+              // Select the marker
+              this.selectionManager
+                .select(clickedSelectionId)
+                .then((ids: ISelectionId[]) => {
+                  this.currentSelection = ids;
+                  this.persistentSelection = [...ids];
+                  this.updateMarkersVisibility(ids);
+                })
+                .catch((error) => {
+                  // Error selecting marker
+                });
+            }
+          }
+
+          L.DomEvent.stopPropagation(event);
+        });
+
+        // Add marker to cluster group
+        this.markerClusterGroup.addLayer(marker);
+        this.markers.push(marker);
+      }
+    });
+
+    // Only add cluster group to map if base map URL is provided
+    const hasBaseMapUrl =
+      this.settings?.mapSettingsCard?.baseMapUrl?.value?.trim() !== "";
+    if (hasBaseMapUrl && !this.map.hasLayer(this.markerClusterGroup)) {
+      this.markerClusterGroup.addTo(this.map);
+    }
+  }
+
+  // Build tooltip content for categorical data
+  private buildCategoricalTooltipContent(
+    locationInfo: any,
+    refId: any
+  ): string {
+    const tooltipParts: string[] = [];
+
+    // Add Obs ID from location field if available
+    if (
+      locationInfo.obsId !== undefined &&
+      locationInfo.obsId !== null &&
+      locationInfo.obsId !== ""
+    ) {
+      tooltipParts.push(
+        `<div class="tooltip-row"><span class="field-name">Obs ID</span><span class="field-value">${locationInfo.obsId}</span></div>`
+      );
+    }
+
+    // Add Country from location field if available
+    if (
+      locationInfo.country !== undefined &&
+      locationInfo.country !== null &&
+      locationInfo.country !== ""
+    ) {
+      tooltipParts.push(
+        `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${locationInfo.country}</span></div>`
+      );
+    }
+
+    return this.buildTooltipWithOddDividers(tooltipParts);
   }
 
   private processMarkerData(dataView: DataView) {
@@ -879,137 +2119,70 @@ export class Visual implements IVisual {
       return;
     }
 
+    // Clear cached admin codes when processing new data
+    this.cachedAdminCodes = [];
+
     const columns = dataView.table.columns;
     const values = dataView.table.rows;
 
-    // Find column indices for marker data
-    const latColIndex = columns.findIndex((col) => col.roles?.latitude);
-    const lngColIndex = columns.findIndex((col) => col.roles?.longitude);
-
-    // Fallback: If roles are not found, try to detect by column names
-    let fallbackLatColIndex = -1;
-    let fallbackLngColIndex = -1;
-
-    if (latColIndex === -1 || lngColIndex === -1) {
-      console.log(
-        "⚠️  Latitude/Longitude roles not found, attempting fallback detection by column names..."
-      );
-
-      fallbackLatColIndex = columns.findIndex(
-        (col) =>
-          col.displayName.toLowerCase().includes("lat") ||
-          col.displayName.toLowerCase().includes("latitude") ||
-          col.displayName.toLowerCase().includes("y") ||
-          col.displayName === "Latitude" ||
-          col.displayName === "latitude"
-      );
-
-      fallbackLngColIndex = columns.findIndex(
-        (col) =>
-          col.displayName.toLowerCase().includes("lng") ||
-          col.displayName.toLowerCase().includes("longitude") ||
-          col.displayName.toLowerCase().includes("x") ||
-          col.displayName === "Longitude" ||
-          col.displayName === "longitude"
-      );
-
-      console.log("🔍 Fallback column detection:", {
-        fallbackLatColIndex: fallbackLatColIndex,
-        fallbackLngColIndex: fallbackLngColIndex,
-        fallbackLatName:
-          fallbackLatColIndex >= 0
-            ? columns[fallbackLatColIndex].displayName
-            : "NOT FOUND",
-        fallbackLngName:
-          fallbackLngColIndex >= 0
-            ? columns[fallbackLngColIndex].displayName
-            : "NOT FOUND",
-      });
+    // Get Ref ID field for filtering (contains comma-separated list of visible Ref IDs)
+    const refIdColIndex = columns.findIndex((col) => col.roles?.refId);
+    let refIdFilterString = "";
+    if (refIdColIndex >= 0 && values.length > 0) {
+      refIdFilterString = String(values[0][refIdColIndex] || "");
     }
 
-    // Use fallback indices if primary roles are not found
-    const finalLatColIndex =
-      latColIndex >= 0 ? latColIndex : fallbackLatColIndex;
-    const finalLngColIndex =
-      lngColIndex >= 0 ? lngColIndex : fallbackLngColIndex;
+    // Build markers using either explicit lat/lng or the combined location field
+    const extracted = values.map((row) =>
+      this.getLatLngAdminForRow(row, columns)
+    );
+    const validCoordinateRows = values
+      .map((row, idx) => ({ row, idx, info: extracted[idx] }))
+      .filter(
+        (o) =>
+          o.info &&
+          o.info.latitude !== undefined &&
+          o.info.longitude !== undefined &&
+          !isNaN(o.info.latitude as number) &&
+          !isNaN(o.info.longitude as number)
+      );
 
-    // Debug: Show all columns and their roles
-    console.log("🔍 All available columns for marker debugging:");
-    columns.forEach((col, index) => {
-      console.log(
-        `  ${index}: "${col.displayName}" - roles: ${JSON.stringify(col.roles)}`
-      );
-    });
-
-    if (finalLatColIndex >= 0 && finalLngColIndex >= 0) {
-      console.log("✅ Found latitude/longitude columns for markers");
-      console.log(
-        `🔍 Latitude column index: ${finalLatColIndex}, name: ${columns[finalLatColIndex]?.displayName}`
-      );
-      console.log(
-        `🔍 Longitude column index: ${finalLngColIndex}, name: ${columns[finalLngColIndex]?.displayName}`
-      );
+    if (validCoordinateRows.length > 0) {
+      // Found latitude/longitude columns for markers
+      // Latitude column index: finalLatColIndex, name: columns[finalLatColIndex]?.displayName
+      // Longitude column index: finalLngColIndex, name: columns[finalLngColIndex]?.displayName
 
       // Debug: Show actual values in the first few rows
-      console.log("🔍 First 3 rows of lat/lng data:");
-      for (let i = 0; i < Math.min(3, values.length); i++) {
-        const lat = values[i][finalLatColIndex];
-        const lng = values[i][finalLngColIndex];
-        console.log(
-          `  Row ${i}: lat=${lat} (${typeof lat}), lng=${lng} (${typeof lng})`
-        );
-      }
+      // First 3 rows of lat/lng data
 
-      // Check if we have valid coordinate data
-      const validCoordinateRows = values.filter((row) => {
-        const lat = parseFloat(String(row[finalLatColIndex]));
-        const lng = parseFloat(String(row[finalLngColIndex]));
-        return !isNaN(lat) && !isNaN(lng) && lat !== 0 && lng !== 0;
-      });
-
-      console.log(
-        `🔍 Found ${validCoordinateRows.length} rows with valid coordinates out of ${values.length} total rows`
-      );
-
-      // Debug: Show what the data structure should look like
-      console.log("🔍 EXPECTED DATA STRUCTURE for markers + choropleth:");
-      console.log("  • Each row should have: lat, lng, geometryString");
-      console.log("  • lat/lng should be numbers (e.g., 40.7128, -74.0060)");
-      console.log("  • geometryString should contain valid GeoJSON");
-      console.log(
-        "  • Current issue: lat/lng are 'NA' strings instead of numbers"
-      );
-
-      if (validCoordinateRows.length === 0) {
-        console.log(
-          "⚠️ No valid coordinate data found - skipping marker creation"
-        );
-        console.log(
-          "💡 SOLUTION: Ensure your data source has actual coordinate values, not 'NA'"
-        );
-        return;
-      }
+      // validCoordinateRows already computed above using combined/existing fields
 
       // Clear existing markers
       this.markers.forEach((marker) => {
-        this.map.removeLayer(marker);
+        this.markerClusterGroup.removeLayer(marker);
       });
       this.markers = [];
 
-      // Create markers only for rows with valid coordinates
-      validCoordinateRows.forEach((row, index) => {
-        const lat = parseFloat(String(row[finalLatColIndex]));
-        const lng = parseFloat(String(row[finalLngColIndex]));
+      // Clear the cluster group
+      this.markerClusterGroup.clearLayers();
 
-        // Create custom marker with original blue styling
+      // Create markers only for rows with valid coordinates
+      validCoordinateRows.forEach((o) => {
+        const lat = o.info.latitude as number;
+        const lng = o.info.longitude as number;
+
+        // Always use orange color for markers
+        const markerColor = "#F9B112";
+
+        // Create custom marker with dynamic color styling
         const customMarkerIcon = L.divIcon({
           className: "custom-marker",
           html: `
-            <svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">
-              <path d="M12.5 0C5.596 0 0 5.596 0 12.5c0 9.375 12.5 28.5 12.5 28.5s12.5-19.125 12.5-28.5C25 5.596 19.404 0 12.5 0z" fill="#22294d"/>
-              <circle cx="12.5" cy="12.5" r="6" fill="white"/>
-            </svg>
-          `,
+              <svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12.5 0C5.596 0 0 5.596 0 12.5c0 9.375 12.5 28.5 12.5 28.5s12.5-19.125 12.5-28.5C25 5.596 19.404 0 12.5 0z" fill="${markerColor}"/>
+                <circle cx="12.5" cy="12.5" r="6" fill="white"/>
+              </svg>
+            `,
           iconSize: [25, 41],
           iconAnchor: [12, 41],
           popupAnchor: [1, -34],
@@ -1021,72 +2194,116 @@ export class Visual implements IVisual {
         });
 
         // Add selection ID to marker (use original row index if possible)
-        const originalRowIndex = values.indexOf(row);
+        const originalRowIndex = o.idx;
         if (this.selectionIds && this.selectionIds[originalRowIndex]) {
           (marker as any).options.selectionId =
             this.selectionIds[originalRowIndex];
         }
 
+        // Store location info and refId for tooltips and clustering
+        (marker as any).locationInfo = o.info;
+
+        // Get refId from the location data (first part of the location string)
+        const locationRefId = o.info.refId;
+        (marker as any).refId = locationRefId;
+
+        // Apply opacity based on Ref ID filtering
+        const isRefIdInMeasure = this.isMarkerRefIdInMeasure(
+          locationRefId,
+          refIdFilterString
+        );
+
+        // Store the opacity state on the marker for later use
+        (marker as any).refIdFiltered = isRefIdInMeasure;
+
+        // Apply opacity immediately if element is available
+        const markerElement = marker.getElement();
+        if (markerElement) {
+          markerElement.style.opacity = isRefIdInMeasure ? "1" : "0.3";
+        } else {
+          // If element not available yet, apply opacity after marker is added to map
+          marker.on("add", () => {
+            const element = marker.getElement();
+            if (element) {
+              element.style.opacity = isRefIdInMeasure ? "1" : "0.3";
+            }
+          });
+        }
+
         // Add click handler for selection
         marker.on("click", (event) => {
-          console.log(`Marker clicked: index ${index}`);
-
-          // Build tooltip content from Power BI tooltip fields
-          const tooltipContent = this.buildMarkerTooltipContent(row, columns);
+          // Build tooltip content using stored locationInfo and refId
+          const tooltipContent = this.buildCategoricalTooltipContent(
+            o.info,
+            locationRefId
+          );
           this.showTooltip(tooltipContent, event.latlng);
 
           // Handle selection if selection ID exists
           if (this.selectionIds && this.selectionIds[originalRowIndex]) {
-            this.selectionManager
-              .select(this.selectionIds[originalRowIndex])
-              .then((ids: ISelectionId[]) => {
-                console.log("Selection result:", ids);
-                this.currentSelection = ids;
-                this.persistentSelection = [...ids];
+            const clickedSelectionId = this.selectionIds[originalRowIndex];
 
-                if (ids.length === 0) {
-                  this.handleMarkerDeselection(originalRowIndex);
-                } else {
+            // Check if this marker is already selected
+            const isCurrentlySelected = this.currentSelection.some((id) => {
+              if (!id || !clickedSelectionId) return false;
+              if (id.getKey && clickedSelectionId.getKey) {
+                return id.getKey() === clickedSelectionId.getKey();
+              }
+              if (id.toString && clickedSelectionId.toString) {
+                return id.toString() === clickedSelectionId.toString();
+              }
+              return id === clickedSelectionId;
+            });
+
+            if (isCurrentlySelected) {
+              // Deselect the marker
+              this.selectionManager
+                .clear()
+                .then(() => {
+                  this.currentSelection = [];
+                  this.persistentSelection = [];
+                  // Show markers in filtered data
+                  this.updateMarkersVisibility([]);
+                })
+                .catch((error) => {
+                  // Error clearing selection
+                });
+            } else {
+              // Select the marker
+              this.selectionManager
+                .select(clickedSelectionId)
+                .then((ids: ISelectionId[]) => {
+                  this.currentSelection = ids;
+                  this.persistentSelection = [...ids];
                   this.updateMarkersVisibility(ids);
-                }
-              })
-              .catch((error) => {
-                console.error("Error in marker selection:", error);
-                // Fallback: show all markers if selection fails
-                if (this.selectionIds && this.selectionIds.length > 0) {
-                  console.log(
-                    "Falling back to show all markers due to selection error"
-                  );
-                  this.updateMarkersVisibility(this.selectionIds);
-                } else {
-                  console.warn("No selection IDs available for fallback");
-                  // Show all markers without selection
-                  this.markers.forEach((marker) => {
-                    if (!this.map.hasLayer(marker)) {
-                      marker.addTo(this.map);
-                    }
-                  });
-                }
-              });
+                })
+                .catch((error) => {
+                  // Error selecting marker
+                });
+            }
           } else {
-            console.warn("No selection ID found for marker", index);
+            // No selection ID found for marker
           }
 
           L.DomEvent.stopPropagation(event);
         });
 
-        // Add marker to map
-        marker.addTo(this.map);
+        // Add marker to cluster group instead of map
+        this.markerClusterGroup.addLayer(marker);
         this.markers.push(marker);
-
-        console.log(`✅ Created marker ${index + 1} at [${lat}, ${lng}]`);
       });
 
-      console.log(
-        `✅ Created ${this.markers.length} markers from ${validCoordinateRows.length} valid coordinate rows`
-      );
+      // Only add cluster group to map if base map URL is provided
+      const hasBaseMapUrl =
+        this.settings?.mapSettingsCard?.baseMapUrl?.value?.trim() !== "";
+      if (hasBaseMapUrl && !this.map.hasLayer(this.markerClusterGroup)) {
+        this.markerClusterGroup.addTo(this.map);
+      }
+
+      // Force choropleth layer update when both GeoJSON and data are ready
+      this.forceChoroplethUpdate();
     } else {
-      console.log("⚠️  No valid latitude/longitude columns found for markers");
+      // No valid latitude/longitude columns found for markers
     }
   }
 
@@ -1107,105 +2324,37 @@ export class Visual implements IVisual {
         .withTable(dataView.table, index)
         .createSelectionId();
     });
-
-    console.log(
-      `✅ Created ${this.selectionIds.length} selection IDs for markers`
-    );
-  }
-
-  private updateChoroplethLayer() {
-    if (!this.choroplethLayer) {
-      console.log("❌ No choropleth layer available");
-      return;
-    }
-
-    // Clear existing choropleth layer
-    this.choroplethLayer.clearLayers();
-
-    if (this.powerBIChoroplethData.length === 0) {
-      console.log("⚠️ No choropleth data to display");
-      return;
-    }
-
-    console.log(
-      `🔍 Creating ${this.powerBIChoroplethData.length} choropleth features`
-    );
-
-    // Create GeoJSON features from Power BI data
-    const features = this.powerBIChoroplethData.map((data) => {
-      const feature = {
-        type: "Feature",
-        properties: {
-          adminCode: data.adminCode,
-          choropleth_value: data.choroplethValue,
-          name: data.countryName,
-          isoCode: data.isoCode,
-          continent: data.continent,
-          tooltipData: data.tooltipData,
-          choroplethTooltipData: data.choroplethTooltipData, // Add Power BI choropleth tooltip data
-        },
-        geometry: data.geometry,
-      };
-
-      // Debug: Log what we're setting for each feature
-      console.log(`🔍 Creating feature for ${data.countryName}:`, {
-        adminCode: data.adminCode,
-        properties: feature.properties,
-      });
-
-      return feature;
-    });
-
-    const geoJsonData = {
-      type: "FeatureCollection",
-      features: features,
-    };
-
-    console.log(`🔍 Adding ${features.length} features to choropleth layer`);
-
-    // Add data to choropleth layer
-    this.choroplethLayer.addData(geoJsonData);
-
-    // Add to map if not already added
-    if (!this.map.hasLayer(this.choroplethLayer)) {
-      console.log("🔍 Adding choropleth layer to map");
-      this.choroplethLayer.addTo(this.map);
-    } else {
-      console.log("🔍 Choropleth layer already on map");
-    }
-
-    // Don't fit bounds - keep our desired zoom level 2
-    // This prevents the jarring zoom-in-then-zoom-out effect
-    console.log(
-      "🗺️ Keeping map at zoom level 2 - no bounds fitting for choropleth"
-    );
-
-    console.log(`✅ Updated choropleth layer with ${features.length} features`);
   }
 
   private clearAllData() {
-    console.log("🧹 clearAllData called - clearing all visual data");
+    // Clear all loading operations and hide loader
+    this.loadingOperations.clear();
+    if (this.loaderDiv) {
+      this.loaderDiv.style.display = "none";
+      this.isLoading = false;
+    }
 
     // Clear markers
     this.markers.forEach((marker) => {
-      this.map.removeLayer(marker);
+      this.markerClusterGroup.removeLayer(marker);
     });
     this.markers = [];
-
-    // Clear choropleth layer
-    if (this.choroplethLayer) {
-      this.choroplethLayer.clearLayers();
-    }
 
     // Clear selection state
     this.currentSelection = [];
     this.persistentSelection = [];
     this.selectionIds = [];
 
-    // Clear choropleth data
-    this.powerBIChoroplethData = [];
+    // Clear choropleth layer
+    if (this.choroplethLayer) {
+      this.choroplethLayer.clearLayers();
+    }
 
-    console.log("🧹 clearAllData completed - all data cleared");
+    // Clear cached admin codes
+    this.cachedAdminCodes = [];
+
+    // Reset map loaded flag
+    this.mapLoaded = false;
   }
 
   private updateMarkersVisibility(selectedIds: ISelectionId[]) {
@@ -1217,16 +2366,13 @@ export class Visual implements IVisual {
 
       // Skip markers without selection IDs
       if (!markerSelectionId) {
-        console.warn(
-          `Marker ${index} has no selection ID, skipping visibility update`
-        );
         return;
       }
 
       // Check if this marker should be visible based on Power BI filtering
       // A marker should be visible if:
-      // 1. It's in the current filtered data view, OR
-      // 2. It's explicitly selected by the user
+      // 1. It's in the current filtered data view (Power BI filtering), OR
+      // 2. It's explicitly selected by the user (cross-filtering)
       const isInFilteredData = this.isMarkerInFilteredData(markerSelectionId);
       const isExplicitlySelected = selectedIds.some((id) => {
         if (!id) return false;
@@ -1240,69 +2386,128 @@ export class Visual implements IVisual {
         return id === markerSelectionId;
       });
 
-      const shouldBeVisible = isInFilteredData || isExplicitlySelected;
-
-      console.log(
-        `🔍 Marker ${index}: isInFilteredData=${isInFilteredData}, isExplicitlySelected=${isExplicitlySelected}, shouldBeVisible=${shouldBeVisible}`
-      );
+      // For manual selection: show all markers but dim non-selected ones
+      // For Power BI filtering: show markers that are in the filtered data
+      const shouldBeVisible =
+        selectedIds.length > 0 ? isInFilteredData : isInFilteredData;
 
       if (shouldBeVisible) {
         // Show marker
-        if (!this.map.hasLayer(marker)) {
-          marker.addTo(this.map);
+        if (!this.markerClusterGroup.hasLayer(marker)) {
+          this.markerClusterGroup.addLayer(marker);
           visibleMarkers++;
         } else {
           visibleMarkers++;
         }
+
+        // Apply opacity based on selection and Ref ID filtering
+        const markerElement = marker.getElement();
+        if (markerElement) {
+          // Get Ref ID filtering state
+          const isRefIdFiltered = (marker as any).refIdFiltered;
+
+          if (selectedIds.length > 0) {
+            // If there are selections, dim non-selected markers
+            const isSelected = isExplicitlySelected;
+            if (isSelected) {
+              // Selected marker: use Ref ID filtering opacity
+              markerElement.style.opacity = isRefIdFiltered ? "1" : "0.3";
+            } else {
+              // Non-selected marker: dim further
+              markerElement.style.opacity = isRefIdFiltered ? "0.5" : "0.15";
+            }
+          } else {
+            // No selections, use Ref ID filtering opacity
+            markerElement.style.opacity = isRefIdFiltered ? "1" : "0.3";
+          }
+        }
       } else {
-        // Hide marker
-        if (this.map.hasLayer(marker)) {
-          this.map.removeLayer(marker);
+        // Hide marker (not in filtered data)
+        if (this.markerClusterGroup.hasLayer(marker)) {
+          this.markerClusterGroup.removeLayer(marker);
           hiddenMarkers++;
         }
       }
     });
 
-    console.log(
-      `📊 Marker visibility updated: ${visibleMarkers} visible, ${hiddenMarkers} hidden`
-    );
+    // Update cluster opacity based on selection
+    this.updateClusterOpacity(selectedIds);
 
     // Check empty state after marker visibility update
     this.performEmptyStateCheck();
   }
 
-  private isMarkerInFilteredData(markerSelectionId: ISelectionId): boolean {
-    // In Power BI, when filters are applied, the dataView.table.rows might not change
-    // Instead, we should check if this marker's selection ID is in the current Power BI selection
-    // If there's no current selection, all markers should be visible (no filter applied)
-
-    // Check if there's a current selection
-    if (!this.currentSelection || this.currentSelection.length === 0) {
-      console.log(
-        "🔍 isMarkerInFilteredData: No current selection - all markers should be visible"
+  private updateClusterOpacity(selectedIds: ISelectionId[]) {
+    // Use a timeout to ensure clusters are rendered before updating opacity
+    setTimeout(() => {
+      const clusterElements = document.querySelectorAll(
+        ".marker-cluster-small, .marker-cluster-medium, .marker-cluster-large"
       );
-      return true; // No filter applied, show all markers
+
+      clusterElements.forEach((clusterElement) => {
+        // Access the Leaflet layer via DOM traversal is not reliable; instead, approximate by checking child markers' selection
+        // We'll compute based on bounds overlap with selected markers' layers present in the cluster group
+        // Simpler approach: if any visible selected marker exists, dim clusters that don't contain selected markers
+
+        if (selectedIds.length === 0) {
+          (clusterElement as HTMLElement).style.opacity = "1";
+          return;
+        }
+
+        // Determine if this cluster contains any selected marker by probing nearby markers via DOM ancestors
+        // Fallback heuristic: if any selected marker element exists inside this cluster element
+        const markerChildren = clusterElement.querySelectorAll(
+          ".leaflet-marker-icon"
+        );
+        let hasSelected = false;
+        markerChildren.forEach((el) => {
+          const opacity = (el as HTMLElement).style.opacity;
+          if (opacity === "1") {
+            hasSelected = true;
+          }
+        });
+
+        (clusterElement as HTMLElement).style.opacity = hasSelected
+          ? "1"
+          : "0.5";
+      });
+    }, 100);
+  }
+
+  private isMarkerInFilteredData(markerSelectionId: ISelectionId): boolean {
+    // Power BI filtering works by providing only the filtered data in dataView.table.rows
+    // We should show markers that correspond to the current filtered data view
+
+    if (
+      !this.currentDataView ||
+      !this.currentDataView.table ||
+      !this.currentDataView.table.rows
+    ) {
+      return true; // No data view, show all markers
     }
 
-    // Check if this marker's selection ID matches any of the currently selected items
-    const isSelected = this.currentSelection.some((selectedId) => {
-      if (!selectedId || !markerSelectionId) return false;
+    // Check if this marker's selection ID corresponds to a row in the current filtered data
+    const currentFilteredRows = this.currentDataView.table.rows;
 
-      if (selectedId.getKey && markerSelectionId.getKey) {
-        return selectedId.getKey() === markerSelectionId.getKey();
+    // Find the marker's index in the original data
+    const markerIndex = this.selectionIds.findIndex((id) => {
+      if (!id || !markerSelectionId) return false;
+
+      if (id.getKey && markerSelectionId.getKey) {
+        return id.getKey() === markerSelectionId.getKey();
       }
-      if (selectedId.toString && markerSelectionId.toString) {
-        return selectedId.toString() === markerSelectionId.toString();
+      if (id.toString && markerSelectionId.toString) {
+        return id.toString() === markerSelectionId.toString();
       }
-      return selectedId === markerSelectionId;
+      return id === markerSelectionId;
     });
 
-    console.log(
-      `🔍 isMarkerInFilteredData: Marker ${
-        isSelected ? "IS" : "is NOT"
-      } in current selection`
-    );
-    return isSelected;
+    // If marker index is found and it's within the current filtered data range, show it
+    if (markerIndex >= 0 && markerIndex < currentFilteredRows.length) {
+      return true;
+    }
+
+    return false;
   }
 
   private showTooltip(content: string, latlng: L.LatLng) {
@@ -1345,80 +2550,8 @@ export class Visual implements IVisual {
     }
   }
 
-  private buildChoroplethTooltipContent(feature: any): string {
-    const tooltipParts = [];
-
-    // Add basic country info
-    const name =
-      feature.properties?.name ||
-      feature.properties?.countryName ||
-      "Unknown Region";
-
-    // PRIORITY 1: Add all Power BI tooltip fields (same as marker tooltip)
-    if (feature.properties?.choroplethTooltipData) {
-      const choroplethTooltipData = feature.properties.choroplethTooltipData;
-      if (
-        choroplethTooltipData instanceof Map &&
-        choroplethTooltipData.size > 0
-      ) {
-        console.log(
-          `🔍 Building tooltip for ${name} with Power BI tooltip data:`,
-          choroplethTooltipData
-        );
-
-        // Display all tooltip fields from Power BI (same as marker tooltip)
-        choroplethTooltipData.forEach((value, key) => {
-          if (
-            value !== null &&
-            value !== undefined &&
-            value !== "" &&
-            value !== "NA"
-          ) {
-            // Show the actual column name from Power BI (not hardcoded "Choropleth Tooltip")
-            tooltipParts.push(
-              `<div class="tooltip-row"><span class="field-name">${key}</span><span class="field-value">${value}</span></div>`
-            );
-          }
-        });
-
-        // If we have Power BI tooltip data, return it immediately
-        return tooltipParts.join("");
-      }
-    }
-
-    // PRIORITY 2: Add choropleth value if available
-    if (
-      feature.properties?.choropleth_value !== null &&
-      feature.properties?.choropleth_value !== undefined
-    ) {
-      tooltipParts.push(
-        `<div class="tooltip-row"><span class="field-name">Value</span><span class="field-value">${feature.properties.choropleth_value}</span></div>`
-      );
-    }
-
-    // PRIORITY 3: Add legacy tooltip data from custom.geo.json (fallback only)
-    if (feature.properties?.tooltipData) {
-      const tooltipData = feature.properties.tooltipData;
-      if (tooltipData instanceof Map && tooltipData.size > 0) {
-        console.log(
-          `🔍 Building tooltip for ${name} with legacy tooltip data:`,
-          tooltipData
-        );
-        tooltipData.forEach((value, key) => {
-          if (value !== null && value !== undefined && value !== "NA") {
-            tooltipParts.push(
-              `<div class="tooltip-row"><span class="field-name">${key}</span><span class="field-value">${value}</span></div>`
-            );
-          }
-        });
-      }
-    }
-
-    return tooltipParts.join("");
-  }
-
   private buildMarkerTooltipContent(row: any[], columns: any[]): string {
-    const tooltipParts = [];
+    const tooltipParts: string[] = [];
 
     // Find tooltip column indices
     const tooltipColIndices = columns
@@ -1446,12 +2579,10 @@ export class Visual implements IVisual {
 
     // If no tooltip data found, show coordinates as fallback
     if (tooltipParts.length === 0) {
-      const latColIndex = columns.findIndex((col) => col.roles?.latitude);
-      const lngColIndex = columns.findIndex((col) => col.roles?.longitude);
-
-      if (latColIndex >= 0 && lngColIndex >= 0) {
-        const lat = row[latColIndex];
-        const lng = row[lngColIndex];
+      const info = this.getLatLngAdminForRow(row, columns);
+      if (info.latitude !== undefined && info.longitude !== undefined) {
+        const lat = info.latitude;
+        const lng = info.longitude;
         tooltipParts.push(
           `<div class="tooltip-row"><span class="field-name">Latitude</span><span class="field-value">${lat}</span></div>`
         );
@@ -1461,7 +2592,7 @@ export class Visual implements IVisual {
       }
     }
 
-    return tooltipParts.join("");
+    return this.buildTooltipWithOddDividers(tooltipParts);
   }
 
   private showEmptyState() {
@@ -1470,7 +2601,6 @@ export class Visual implements IVisual {
       this.emptyStateDiv.style.opacity = "1";
       this.emptyStateDiv.style.pointerEvents = "auto";
       this.emptyStateDiv.style.display = "block";
-      console.log("Empty state shown - no distribution data available");
     }
   }
 
@@ -1478,7 +2608,22 @@ export class Visual implements IVisual {
     if (this.emptyStateDiv) {
       this.emptyStateDiv.style.opacity = "0";
       this.emptyStateDiv.style.pointerEvents = "none";
-      console.log("Empty state hidden - distribution data available");
+    }
+  }
+
+  private showLoader(operation: string = "default"): void {
+    this.loadingOperations.add(operation);
+    if (this.loaderDiv) {
+      this.loaderDiv.style.display = "block";
+      this.isLoading = true;
+    }
+  }
+
+  private hideLoader(operation: string = "default"): void {
+    this.loadingOperations.delete(operation);
+    if (this.loaderDiv && this.loadingOperations.size === 0) {
+      this.loaderDiv.style.display = "none";
+      this.isLoading = false;
     }
   }
 
@@ -1487,51 +2632,43 @@ export class Visual implements IVisual {
       try {
         this.ensureEmptyStateDivPosition();
         const hasAnyData = this.hasAnyDistributionData();
+        const hasBaseMapUrl =
+          this.settings?.mapSettingsCard?.baseMapUrl?.value?.trim() !== "";
+        const hasOriginalData = this.selectionIds.length > 0;
 
-        if (hasAnyData) {
-          this.hideEmptyState();
+        // Always show message until URL is provided, regardless of data
+        if (!hasBaseMapUrl) {
+          // Show appropriate message based on whether data is present
+          if (hasOriginalData) {
+            this.showUrlRequiredMessage();
+          } else {
+            this.showBaseMapMessage();
+          }
         } else {
-          this.showEmptyState();
+          // URL is provided, check if we should show empty state
+          if (hasOriginalData && !hasAnyData) {
+            // We have original data but no visible data (filtered out)
+            this.showNoDataMessage();
+          } else {
+            // Hide empty state (map will be shown)
+            this.hideEmptyState();
+          }
         }
       } catch (error) {
-        console.error("Error in empty state check:", error);
-        this.showEmptyState();
+        this.showBaseMapMessage();
       }
     }, 100);
   }
 
   private hasAnyDistributionData(): boolean {
     try {
-      const totalMarkers = this.markers.length;
       const visibleMarkers = this.markers.filter((marker) =>
-        this.map.hasLayer(marker)
+        this.markerClusterGroup.hasLayer(marker)
       ).length;
-      const hasOriginalData = this.selectionIds.length > 0;
-      const hasChoroplethData = this.powerBIChoroplethData.length > 0;
 
-      // Check if there's actually visible data on the map
-      const hasVisibleData = visibleMarkers > 0 || hasChoroplethData;
-
-      // Also check if there's data available but just filtered out
-      const hasDataAvailable = totalMarkers > 0 || hasChoroplethData;
-
-      const result =
-        hasVisibleData || (hasDataAvailable && !this.currentSelection?.length);
-
-      console.log("Distribution data check:", {
-        totalMarkers,
-        visibleMarkers,
-        hasChoroplethData,
-        hasOriginalData,
-        hasVisibleData,
-        hasDataAvailable,
-        currentSelectionLength: this.currentSelection?.length || 0,
-        hasAnyData: result,
-      });
-
-      return result;
+      // Only return true if there are actually visible markers on the map
+      return visibleMarkers > 0;
     } catch (error) {
-      console.error("Error in hasAnyDistributionData:", error);
       return false;
     }
   }
@@ -1552,68 +2689,49 @@ export class Visual implements IVisual {
   private getCurrentDataContext(): ISelectionId[] {
     try {
       return this.selectionIds.filter((id, index) => {
-        return this.markers[index] && this.map.hasLayer(this.markers[index]);
+        return (
+          this.markers[index] &&
+          this.markerClusterGroup.hasLayer(this.markers[index])
+        );
       });
     } catch (error) {
-      console.error("Error getting current data context:", error);
       return [];
     }
   }
 
   private handleMarkerDeselection(clickedMarkerIndex: number): void {
     try {
-      console.log(`Handling deselection for marker ${clickedMarkerIndex}`);
-
-      // Safety check for selection IDs
-      if (this.selectionIds && this.selectionIds.length > 0) {
-        this.updateMarkersVisibility(this.selectionIds);
-      } else {
-        console.warn("No selection IDs available for deselection handling");
-        // Show all markers without selection
-        this.markers.forEach((marker) => {
-          if (!this.map.hasLayer(marker)) {
-            marker.addTo(this.map);
-          }
-        });
-      }
+      // When deselecting, show markers that are in the current Power BI filtered data
+      // This respects Power BI filters while clearing manual selections
+      this.updateMarkersVisibility([]);
     } catch (error) {
-      console.error("Error handling marker deselection:", error);
-      // Fallback: show all markers
-      this.markers.forEach((marker) => {
-        if (!this.map.hasLayer(marker)) {
-          marker.addTo(this.map);
-        }
-      });
+      // Fallback: show markers in filtered data
+      this.updateMarkersVisibility([]);
     }
   }
 
   private showOnlyCurrentContextMarkers(): void {
     try {
-      console.log("Showing only markers in current filtered context");
-      this.updateMarkersVisibility(this.selectionIds);
+      // Show markers that are in the current Power BI filtered data
+      this.updateMarkersVisibility([]);
     } catch (error) {
-      console.error("Error showing current context markers:", error);
+      // Error showing current context markers
     }
   }
 
   private restoreSelectionState(): void {
     try {
       if (this.persistentSelection.length > 0) {
-        console.log(
-          "Restoring persistent selection state:",
-          this.persistentSelection
-        );
         this.currentSelection = [...this.persistentSelection];
         this.updateMarkersVisibility(this.persistentSelection);
       }
     } catch (error) {
-      console.error("Error restoring selection state:", error);
+      // Error restoring selection state
     }
   }
 
   public clearSelection(): void {
     try {
-      console.log("Clearing all selections");
       this.selectionManager
         .clear()
         .then(() => {
@@ -1622,13 +2740,62 @@ export class Visual implements IVisual {
           this.showOnlyCurrentContextMarkers();
         })
         .catch((error) => {
-          console.error("Error clearing selection:", error);
           this.currentSelection = [];
           this.persistentSelection = [];
           this.showOnlyCurrentContextMarkers();
         });
     } catch (error) {
-      console.error("Error in clearSelection:", error);
+      // Error in clearSelection
+    }
+  }
+
+  public enumerateObjectInstances(
+    options: powerbiVisualsApi.EnumerateVisualObjectInstancesOptions
+  ): powerbiVisualsApi.VisualObjectInstanceEnumeration {
+    const objectName = options.objectName;
+    const objectEnumeration: powerbiVisualsApi.VisualObjectInstance[] = [];
+
+    if (objectName === "mapSettings") {
+      // Base map URL enumeration
+      const currentUrl =
+        this.settings?.mapSettingsCard?.baseMapUrl?.value || "";
+      let finalUrl = currentUrl;
+      if (!finalUrl && (this as any).lastBaseMapUrl) {
+        finalUrl = (this as any).lastBaseMapUrl;
+      }
+      objectEnumeration.push({
+        objectName: objectName,
+        properties: {
+          baseMapUrl: finalUrl,
+        },
+        selector: null,
+      });
+
+      // Disputed borders URL enumeration
+      const currentDisputed =
+        this.settings?.mapSettingsCard?.disputedBordersUrl?.value || "";
+      let finalDisputed = currentDisputed;
+      if (!finalDisputed && (this as any).lastDisputedBordersUrl) {
+        finalDisputed = (this as any).lastDisputedBordersUrl;
+      }
+      objectEnumeration.push({
+        objectName: objectName,
+        properties: {
+          disputedBordersUrl: finalDisputed,
+        },
+        selector: null,
+      });
+    }
+
+    return objectEnumeration;
+  }
+
+  // Override the parse method to handle settings changes
+  public parseSettings(settings: any) {
+    if (settings && settings.mapSettings && settings.mapSettings.baseMapUrl) {
+      const url = String(settings.mapSettings.baseMapUrl);
+      this.settings.mapSettingsCard.baseMapUrl.value = url;
+      this.handleBaseMapUrlChange();
     }
   }
 
@@ -1639,12 +2806,10 @@ export class Visual implements IVisual {
       }
       this.markers = [];
       this.selectionIds = [];
-      this.powerBIChoroplethData = [];
       this.currentSelection = [];
       this.persistentSelection = [];
-      console.log("Visual destroyed and cleaned up");
     } catch (error) {
-      console.error("Error during visual destruction:", error);
+      // Error during visual destruction
     }
   }
 
@@ -1655,9 +2820,8 @@ export class Visual implements IVisual {
       }
       this.ensureEmptyStateDivPosition();
       this.performEmptyStateCheck();
-      console.log("Visual resized and updated");
     } catch (error) {
-      console.error("Error during visual resize:", error);
+      // Error during visual resize
     }
   }
 
@@ -1669,32 +2833,12 @@ export class Visual implements IVisual {
       opacity: 1,
       fillOpacity: 0,
       dashArray: lineStyle === "dotted" ? "1, 3" : "10, 5",
-      lineCap: "round",
-      lineJoin: "round",
+      lineCap: "round" as const,
+      lineJoin: "round" as const,
     };
   }
 
   private onEachDisputedBorderFeature(feature: any, layer: L.Layer) {
     // No click events for disputed borders - they are visual indicators only
-  }
-
-  private loadDisputedBorders() {
-    try {
-      const bordersData = disputedBorders;
-
-      if (this.disputedBordersLayer) {
-        this.disputedBordersLayer.clearLayers();
-      }
-
-      this.disputedBordersLayer.addData(bordersData);
-
-      if (!this.map.hasLayer(this.disputedBordersLayer)) {
-        this.disputedBordersLayer.addTo(this.map);
-      }
-
-      console.log("Disputed borders loaded successfully");
-    } catch (error) {
-      console.error("Error loading disputed borders:", error);
-    }
   }
 }
