@@ -40,6 +40,8 @@ export class Visual implements IVisual {
   private mapLoaded: boolean = false; // Track if map is fully loaded
   private debugLocationLogCount: number = 0; // Limit noisy debug logs
   private debugLocationValueLogCount: number = 0; // Limit raw value logs
+  private lastSelectedClusterMarkers: Set<L.Marker> = new Set(); // Track markers from last selected cluster
+  private lastSelectedClusterSelectionIds: ISelectionId[] = []; // Track selection IDs from last selected cluster
 
   constructor(options: VisualConstructorOptions) {
     this.target = options.element;
@@ -79,6 +81,7 @@ export class Visual implements IVisual {
       line-height: 1.4;
       top: 10px;
       left: 10px;
+      overflow: hidden;
     `;
     this.target.appendChild(this.tooltipDiv);
 
@@ -233,6 +236,13 @@ export class Visual implements IVisual {
     this.markerClusterGroup.on("animationend", () => {
       // Re-apply cluster opacity after clustering animations
       this.updateClusterOpacity(this.currentSelection || []);
+
+      // Also check if marker elements are now available and apply opacity (after spiderfy)
+      if (this.currentSelection.length > 0) {
+        setTimeout(() => {
+          this.applyOpacityToSelectedMarkers();
+        }, 200);
+      }
     });
 
     // Hide Leaflet attribution and any flags
@@ -270,6 +280,25 @@ export class Visual implements IVisual {
         text-align: right;
         font-family: Arial, sans-serif;
         font-size: 12px;
+      }
+      
+      /* Scrollbar styling for tooltip */
+      .custom-tooltip div::-webkit-scrollbar {
+        width: 6px;
+      }
+      
+      .custom-tooltip div::-webkit-scrollbar-track {
+        background: #f1f1f1;
+        border-radius: 3px;
+      }
+      
+      .custom-tooltip div::-webkit-scrollbar-thumb {
+        background: #888;
+        border-radius: 3px;
+      }
+      
+      .custom-tooltip div::-webkit-scrollbar-thumb:hover {
+        background: #555;
       }
       
       /* Zoom control spacing and styling */
@@ -420,6 +449,7 @@ export class Visual implements IVisual {
     adminCode?: string;
     obsId?: string;
     country?: string;
+    state?: string;
     refId?: string;
   } {
     if (value === null || value === undefined) return {};
@@ -456,6 +486,8 @@ export class Visual implements IVisual {
         (obj as any).country ??
         (obj as any).countryName ??
         (obj as any).country_name;
+      const state =
+        (obj as any).state ?? (obj as any).stateName ?? (obj as any).state_name;
 
       const result: any = {};
       if (!isNaN(lat)) result.latitude = lat;
@@ -468,6 +500,9 @@ export class Visual implements IVisual {
       }
       if (country !== undefined && country !== null && String(country) !== "") {
         result.country = String(country);
+      }
+      if (state !== undefined && state !== null && String(state) !== "") {
+        result.state = String(state);
       }
       if (this.debugLocationLogCount < 20) {
         try {
@@ -487,10 +522,29 @@ export class Visual implements IVisual {
       let admin: string | undefined;
       let obsId: string | undefined;
       let country: string | undefined;
+      let state: string | undefined;
       let refId: string | undefined;
 
+      // Check if we have the pattern refId,lat,lng,admin,obsId,country,state (7+ parts with commas)
+      if (parts.length >= 7 && /,/.test(raw)) {
+        // Treat as: refId, lat, lng, admin, obsId, country, state
+        refId = parts[0] && parts[0].trim() !== "" ? parts[0] : undefined;
+        latStr = parts[1] && parts[1].trim() !== "" ? parts[1] : undefined;
+        lngStr = parts[2] && parts[2].trim() !== "" ? parts[2] : undefined;
+        admin = parts[3] && parts[3].trim() !== "" ? parts[3] : undefined;
+        obsId = parts[4] && parts[4].trim() !== "" ? parts[4] : undefined;
+        country = parts[5] && parts[5].trim() !== "" ? parts[5] : undefined;
+        // Always extract state if parts[6] exists, even if it's "-"
+        state = parts[6] !== undefined ? parts[6].trim() : undefined;
+
+        if (this.debugLocationLogCount < 20) {
+          try {
+            this.debugLocationLogCount++;
+          } catch {}
+        }
+      }
       // Check if we have the pattern refId,lat,lng,admin,obsId,country (6+ parts with commas)
-      if (parts.length >= 6 && /,/.test(raw)) {
+      else if (parts.length >= 6 && /,/.test(raw)) {
         // Treat as: refId, lat, lng, admin, obsId, country
         refId = parts[0] && parts[0].trim() !== "" ? parts[0] : undefined;
         latStr = parts[1] && parts[1].trim() !== "" ? parts[1] : undefined;
@@ -539,6 +593,9 @@ export class Visual implements IVisual {
       if (country !== undefined && country !== null && String(country) !== "") {
         result.country = String(country);
       }
+      if (state !== undefined && state !== null) {
+        result.state = String(state);
+      }
       // Add refId if it was extracted
       if (
         typeof refId !== "undefined" &&
@@ -560,6 +617,8 @@ export class Visual implements IVisual {
       const admin = parts[3] && parts[3].trim() !== "" ? parts[3] : undefined;
       const obsId = parts[4] && parts[4].trim() !== "" ? parts[4] : undefined;
       const country = parts[5] && parts[5].trim() !== "" ? parts[5] : undefined;
+      // Always extract state if parts[6] exists, even if it's "-"
+      const state = parts[6] !== undefined ? parts[6].trim() : undefined;
 
       if (admin !== undefined && admin !== null && String(admin) !== "") {
         const result: any = { adminCode: String(admin) };
@@ -572,6 +631,14 @@ export class Visual implements IVisual {
           String(country) !== ""
         ) {
           result.country = String(country);
+        }
+        if (
+          state !== undefined &&
+          state !== null &&
+          String(state) !== "" &&
+          String(state) !== "-"
+        ) {
+          result.state = String(state);
         }
         if (this.debugLocationLogCount < 20) {
           try {
@@ -597,6 +664,9 @@ export class Visual implements IVisual {
     );
     const labeledCountryMatch = raw.match(
       /(country|countryName|country_name)\s*[:=]\s*([^,;|\s]+)/i
+    );
+    const labeledStateMatch = raw.match(
+      /(state|stateName|state_name)\s*[:=]\s*([^,;|\s]+)/i
     );
 
     if (labeledLatMatch || labeledLngMatch) {
@@ -629,6 +699,12 @@ export class Visual implements IVisual {
           String(country) !== ""
         ) {
           result.country = String(country);
+        }
+      }
+      if (labeledStateMatch) {
+        const state = labeledStateMatch[2];
+        if (state !== undefined && state !== null && String(state) !== "") {
+          result.state = String(state);
         }
       }
       if (this.debugLocationLogCount < 20) {
@@ -668,7 +744,7 @@ export class Visual implements IVisual {
     return fallback;
   }
 
-  // Helper: extract lat/lng/admin/obsId/country for a row, preferring explicit roles over combined location
+  // Helper: extract lat/lng/admin/obsId/country/state for a row, preferring explicit roles over combined location
   private getLatLngAdminForRow(
     row: any[],
     columns: any[]
@@ -678,6 +754,7 @@ export class Visual implements IVisual {
     adminCode?: string;
     obsId?: string;
     country?: string;
+    state?: string;
     refId?: string;
   } {
     const latIdx = this.getColumnIndexByRole(columns, "latitude");
@@ -728,6 +805,8 @@ export class Visual implements IVisual {
           result.obsId = parsed.obsId;
         if (result.country === undefined && parsed.country !== undefined)
           result.country = parsed.country;
+        if (result.state === undefined && parsed.state !== undefined)
+          result.state = parsed.state;
         if (result.refId === undefined && parsed.refId !== undefined)
           result.refId = parsed.refId;
         if (this.debugLocationLogCount < 20) {
@@ -760,12 +839,6 @@ export class Visual implements IVisual {
     }
   }
 
-  // Performance monitoring helper
-  private logPerformance(operation: string, startTime: number) {
-    const duration = performance.now() - startTime;
-    return duration;
-  }
-
   // Method to reset map to desired zoom level
   private resetToDefaultView() {
     if (this.map) {
@@ -785,126 +858,481 @@ export class Visual implements IVisual {
       const childMarkers = cluster.getAllChildMarkers();
 
       if (childMarkers.length > 0) {
-        // Group markers by country and count ObsIDs
-        const countryData = this.groupMarkersByCountry(childMarkers);
+        // Collect marker information first (this gets the correct data)
+        const clusterMarkerInfo = this.collectClusterMarkerInfo(childMarkers);
 
-        // Create and show tooltip
+        // Build tooltip using the collected info (ensures correct Obs IDs)
+        const countryData =
+          this.buildCountryDataFromMarkerInfo(clusterMarkerInfo);
         const tooltipContent = this.buildClusterTooltipContent(countryData);
         this.showTooltip(tooltipContent, e.latlng);
 
-        // Prevent default cluster behavior
-        e.originalEvent.preventDefault();
-        e.originalEvent.stopPropagation();
+        // Store this cluster's markers for deselection logic
+        this.lastSelectedClusterMarkers = new Set(childMarkers);
+        // Extract selection IDs from cluster marker info
+        this.lastSelectedClusterSelectionIds = clusterMarkerInfo
+          .map((info) => info.selectionId)
+          .filter((id) => id !== undefined) as ISelectionId[];
+
+        // Apply filtering using the collected selection IDs
+        this.applyClusterFilteringWithInfo(childMarkers, clusterMarkerInfo);
+
+        // At max zoom, don't prevent default - let Leaflet spiderfy markers automatically
+        // The spiderfyOnMaxZoom option should handle this, but we need to not block it
+        if (currentZoom < maxZoom) {
+          // Not at max zoom - prevent default zoom behavior
+          e.originalEvent.preventDefault();
+          e.originalEvent.stopPropagation();
+        }
+
+        // At max zoom, manually trigger spiderfy to ensure markers expand
+        if (currentZoom >= maxZoom) {
+          setTimeout(() => {
+            try {
+              // Try to manually trigger spiderfy - cluster should have this method
+              if ((cluster as any).spiderfy) {
+                (cluster as any).spiderfy();
+              } else if ((this.markerClusterGroup as any).spiderfy) {
+                // Try via markerClusterGroup
+                (this.markerClusterGroup as any).spiderfy(cluster);
+              }
+            } catch (spiderfyErr) {}
+          }, 50);
+        }
+
+        // Hide markers when they appear after spiderfy
+        // Check multiple times as spiderfy animation happens
+        setTimeout(() => {
+          this.hideClusterMarkers(childMarkers);
+        }, 100);
+
+        setTimeout(() => {
+          this.hideClusterMarkers(childMarkers);
+        }, 300);
+
+        setTimeout(() => {
+          this.hideClusterMarkers(childMarkers);
+        }, 500);
+
+        setTimeout(() => {
+          this.hideClusterMarkers(childMarkers);
+        }, 800);
+
+        setTimeout(() => {
+          this.hideClusterMarkers(childMarkers);
+        }, 1200);
+
+        // Also hide markers on animation end events
+        const hideMarkersAfterAnimation = () => {
+          this.hideClusterMarkers(childMarkers);
+        };
+        this.markerClusterGroup.once("animationend", hideMarkersAfterAnimation);
+
+        // Continuously monitor and hide markers if they become visible
+        // Stop monitoring after 5 seconds (by then they should be stable)
+        const monitorInterval = setInterval(() => {
+          this.hideClusterMarkers(childMarkers);
+        }, 300);
+        setTimeout(() => {
+          clearInterval(monitorInterval);
+        }, 5000);
+
+        // After applying filter, check for marker elements after delays
+        // Check multiple times as spiderfy animation happens
+        setTimeout(() => {
+          this.applyOpacityToSelectedMarkers();
+        }, 200);
+
+        setTimeout(() => {
+          this.applyOpacityToSelectedMarkers();
+        }, 500);
+
+        setTimeout(() => {
+          this.applyOpacityToSelectedMarkers();
+        }, 1000);
       }
     }
   }
 
-  // Group markers by country using adminCode data
-  private groupMarkersByCountry(
-    markers: L.Marker[]
-  ): Map<string, { countryName: string; obsIds: string[] }> {
-    const countryMap = new Map<
-      string,
-      { countryName: string; obsIds: string[] }
-    >();
+  // Helper function to get a stable key from a selection ID for comparison
+  private getSelectionIdKey(id: ISelectionId): string {
+    if (!id) return "";
+    if (id.getKey) {
+      try {
+        return String(id.getKey());
+      } catch {
+        // Fallback
+      }
+    }
+    if (id.toString) {
+      try {
+        return String(id.toString());
+      } catch {
+        // Fallback
+      }
+    }
+    return String(id);
+  }
 
-    // Handle table data (primary format)
-    if (
-      this.currentDataView?.table?.columns &&
-      this.currentDataView?.table?.rows
-    ) {
-      const columns = this.currentDataView.table.columns;
+  // Collect comprehensive information about all markers in a cluster
+  private collectClusterMarkerInfo(markers: L.Marker[]): Array<{
+    marker: L.Marker;
+    markerIndex: number;
+    selectionId: ISelectionId;
+    selectionKey: string;
+    lat?: number;
+    lng?: number;
+    obsId?: string;
+    country?: string;
+    state?: string;
+    adminCode?: string;
+    rowData?: any;
+  }> {
+    const clusterMarkerInfo: Array<{
+      marker: L.Marker;
+      markerIndex: number;
+      selectionId: ISelectionId;
+      selectionKey: string;
+      lat?: number;
+      lng?: number;
+      obsId?: string;
+      country?: string;
+      state?: string;
+      adminCode?: string;
+      rowData?: any;
+    }> = [];
 
-      // Get the original row data for each marker
-      markers.forEach((marker) => {
-        const markerIndex = this.markers.indexOf(marker);
+    markers.forEach((marker, clusterMarkerIdx) => {
+      const markerIndex = this.markers.indexOf(marker);
+      let selectionId = (marker as any).options?.selectionId;
+      const locationInfo = (marker as any).locationInfo;
+
+      // If not found, find the marker index and use this.selectionIds for consistency
+      if (
+        !selectionId &&
+        markerIndex >= 0 &&
+        this.selectionIds &&
+        this.selectionIds[markerIndex]
+      ) {
+        selectionId = this.selectionIds[markerIndex];
+        (marker as any).options.selectionId = selectionId;
+      }
+
+      if (selectionId) {
+        const selectionKey = this.getSelectionIdKey(selectionId);
+
+        // Get row data if available
+        let rowData = null;
+        let obsId = locationInfo?.obsId;
+        let country = locationInfo?.country;
+        let state = locationInfo?.state;
+        let adminCode = locationInfo?.adminCode;
+        let lat = locationInfo?.latitude;
+        let lng = locationInfo?.longitude;
 
         if (
+          this.currentDataView?.table?.rows &&
           markerIndex >= 0 &&
           markerIndex < this.currentDataView.table.rows.length
         ) {
-          const row = this.currentDataView.table.rows[markerIndex];
-
-          // Use the same logic as the rest of the code to get admin code, obsId, and country
-          const info = this.getLatLngAdminForRow(row, columns);
-          const adminCode = info.adminCode;
-          const obsId = info.obsId;
-          const country = info.country;
-
-          // Skip markers without country information
-          if (!country) {
-            return;
-          }
-
-          // Use country name as the grouping key
-          const groupKey = country;
-
-          if (countryMap.has(groupKey)) {
-            // Add the ObsID if available
-            if (obsId) {
-              countryMap.get(groupKey)!.obsIds.push(obsId);
-            } else {
-              // Add a placeholder for markers without ObsID data
-              countryMap
-                .get(groupKey)!
-                .obsIds.push(`Marker ${markerIndex + 1}`);
-            }
-          } else {
-            countryMap.set(groupKey, {
-              countryName: country,
-              obsIds: obsId ? [obsId] : [`Marker ${markerIndex + 1}`],
-            });
-          }
+          rowData = this.currentDataView.table.rows[markerIndex];
+          const columns = this.currentDataView.table.columns;
+          const info = this.getLatLngAdminForRow(rowData, columns);
+          obsId = obsId || info.obsId;
+          country = country || info.country;
+          state = state || info.state;
+          adminCode = adminCode || info.adminCode;
+          lat = lat || info.latitude;
+          lng = lng || info.longitude;
         }
-      });
-    }
-    // Handle categorical data (fallback)
-    else if (this.currentDataView?.categorical?.categories) {
-      markers.forEach((marker, index) => {
-        const markerIndex = this.markers.indexOf(marker);
 
-        if (markerIndex >= 0) {
-          // Get location info and refId from the marker's stored data
-          const locationInfo = (marker as any).locationInfo;
-          const refId = (marker as any).refId;
+        clusterMarkerInfo.push({
+          marker,
+          markerIndex,
+          selectionId,
+          selectionKey,
+          lat,
+          lng,
+          obsId,
+          country,
+          state,
+          adminCode,
+          rowData,
+        });
+      }
+    });
 
-          if (locationInfo) {
-            const obsId = locationInfo.obsId;
-            const country = locationInfo.country;
+    return clusterMarkerInfo;
+  }
 
-            // Skip markers without country information
-            if (!country) {
-              return;
-            }
+  // Build country data map from collected marker info (ensures correct Obs IDs)
+  private buildCountryDataFromMarkerInfo(
+    markerInfo: Array<{
+      marker: L.Marker;
+      markerIndex: number;
+      selectionId: ISelectionId;
+      selectionKey: string;
+      lat?: number;
+      lng?: number;
+      obsId?: string;
+      country?: string;
+      state?: string;
+      adminCode?: string;
+      rowData?: any;
+    }>
+  ): Map<string, { countryName: string; stateName: string; obsIds: string[] }> {
+    const countryStateMap = new Map<
+      string,
+      { countryName: string; stateName: string; obsIds: string[] }
+    >();
 
-            // Use country name as the grouping key
-            const groupKey = country;
+    markerInfo.forEach((info) => {
+      let country = info.country;
+      const state = info.state || "-";
+      const obsId = info.obsId;
+      const adminCode = info.adminCode;
 
-            if (countryMap.has(groupKey)) {
-              // Add the ObsID if available
-              if (obsId) {
-                countryMap.get(groupKey)!.obsIds.push(obsId);
-              } else {
-                // Add a placeholder for markers without ObsID data
-                countryMap
-                  .get(groupKey)!
-                  .obsIds.push(`Marker ${markerIndex + 1}`);
+      // Get country from adminCode if country not available
+      if (!country && adminCode) {
+        country =
+          this.getCountryNameFromAdminCode(String(adminCode)) || undefined;
+      }
+
+      // Skip markers without country information
+      if (!country) {
+        return;
+      }
+
+      // Use country + state as the grouping key
+      const groupKey = `${country}|||${state}`;
+
+      if (countryStateMap.has(groupKey)) {
+        // Add the ObsID if available (only if not already present to avoid duplicates)
+        if (
+          obsId &&
+          !countryStateMap.get(groupKey)!.obsIds.includes(String(obsId))
+        ) {
+          countryStateMap.get(groupKey)!.obsIds.push(String(obsId));
+        }
+      } else {
+        countryStateMap.set(groupKey, {
+          countryName: country,
+          stateName: state,
+          obsIds: obsId ? [String(obsId)] : [],
+        });
+      }
+    });
+
+    return countryStateMap;
+  }
+
+  // Apply filtering based on markers in the cluster (using pre-collected info)
+  private applyClusterFilteringWithInfo(
+    markers: L.Marker[],
+    markerInfo: Array<{
+      marker: L.Marker;
+      markerIndex: number;
+      selectionId: ISelectionId;
+      selectionKey: string;
+      lat?: number;
+      lng?: number;
+      obsId?: string;
+      country?: string;
+      adminCode?: string;
+      rowData?: any;
+    }>
+  ) {
+    // Extract selection IDs from the pre-collected marker info
+    const clusterSelectionIds: ISelectionId[] = markerInfo.map(
+      (info) => info.selectionId
+    );
+
+    // If we have selection IDs, apply filtering
+    if (clusterSelectionIds.length > 0) {
+      // Get keys for all cluster selection IDs for comparison
+      const clusterKeys = new Set(
+        clusterSelectionIds.map((id) => this.getSelectionIdKey(id))
+      );
+
+      // Get keys from current selection
+      const currentSelectionKeys = new Set(
+        this.currentSelection.map((id) => this.getSelectionIdKey(id))
+      );
+
+      // Check if ALL cluster marker keys are in the current selection
+      const allClusterKeysSelected = Array.from(clusterKeys).every((key) =>
+        currentSelectionKeys.has(key)
+      );
+
+      // If all cluster markers are selected, toggle them off
+      if (allClusterKeysSelected && this.currentSelection.length > 0) {
+        // All cluster markers are already selected, so deselect them (toggle off)
+        this.selectionManager
+          .clear()
+          .then(() => {
+            this.clearSelectionAndCluster();
+          })
+          .catch(() => {
+            // Error clearing selection
+          });
+      } else {
+        // Select all markers in the cluster to apply filtering
+        this.selectionManager
+          .clear()
+          .then(() => {
+            // Update our internal state with all cluster selection IDs
+            this.currentSelection = [...clusterSelectionIds] as ISelectionId[];
+            this.persistentSelection = [
+              ...clusterSelectionIds,
+            ] as ISelectionId[];
+
+            // Update marker visibility immediately so UI reflects selection
+            this.updateMarkersVisibility(
+              this.currentSelection as ISelectionId[]
+            );
+
+            // Multi-select approach based on Stack Overflow solution:
+            // https://stackoverflow.com/questions/37388223/how-to-multiselect-with-selection-manager-in-power-bi-custom-visual
+            // The select() method supports an isMultiSelect parameter (second argument)
+            // Already cleared above, now select each item with isMultiSelect=true for subsequent items
+            if (clusterSelectionIds.length > 1) {
+              // Select first item (we already cleared above, so this is the first selection)
+              let selectionChain = this.selectionManager.select(
+                clusterSelectionIds[0]
+              );
+
+              // Select remaining items with isMultiSelect=true to accumulate selections
+              // This tells Power BI to keep previous selections instead of replacing them
+              for (let i = 1; i < clusterSelectionIds.length; i++) {
+                selectionChain = selectionChain.then(() => {
+                  // Pass true as second parameter to enable multi-select accumulation
+                  return this.selectionManager.select(
+                    clusterSelectionIds[i],
+                    true
+                  );
+                });
               }
-            } else {
-              countryMap.set(groupKey, {
-                countryName: country,
-                obsIds: obsId ? [obsId] : [`Marker ${markerIndex + 1}`],
-              });
+
+              selectionChain
+                .then(() => {
+                  // Update visibility after all selections complete (Power BI may have filtered data)
+                  this.updateMarkersVisibility(
+                    this.currentSelection as ISelectionId[]
+                  );
+                })
+                .catch(() => {
+                  // Even if selection fails, update visibility
+                  this.updateMarkersVisibility(
+                    this.currentSelection as ISelectionId[]
+                  );
+                });
+            } else if (clusterSelectionIds.length === 1) {
+              // Single selection
+              this.selectionManager
+                .select(clusterSelectionIds[0])
+                .then(() => {
+                  this.updateMarkersVisibility(
+                    this.currentSelection as ISelectionId[]
+                  );
+                })
+                .catch(() => {
+                  this.updateMarkersVisibility(
+                    this.currentSelection as ISelectionId[]
+                  );
+                });
             }
-          }
-        }
-      });
-      return countryMap;
+          })
+          .catch(() => {
+            // Error clearing selection
+          });
+      }
+    }
+  }
+
+  // Select all rows matching a GAUL admin code and apply Power BI filtering
+  private selectByAdminGaulCode(gaulCode: any) {
+    if (!this.currentDataView?.table?.rows || !this.selectionIds) {
+      return;
     }
 
-    // Note: Removed legacy duplicate table processing to avoid double counting
+    const columns = this.currentDataView.table.columns;
+    const rows = this.currentDataView.table.rows;
 
-    return countryMap;
+    // Collect selection IDs whose adminCode matches the clicked GAUL code
+    const matchingSelectionIds: ISelectionId[] = [];
+    rows.forEach((row, idx) => {
+      const info = this.getLatLngAdminForRow(row, columns);
+      if (
+        info.adminCode !== undefined &&
+        String(info.adminCode) === String(gaulCode) &&
+        this.selectionIds[idx]
+      ) {
+        matchingSelectionIds.push(this.selectionIds[idx]);
+      }
+    });
+
+    if (matchingSelectionIds.length === 0) {
+      return;
+    }
+
+    // Toggle behavior: if all matching are already selected, clear selection
+    const matchingKeys = new Set(
+      matchingSelectionIds.map((id) => this.getSelectionIdKey(id))
+    );
+    const currentKeys = new Set(
+      (this.currentSelection || []).map((id) => this.getSelectionIdKey(id))
+    );
+
+    const allAlreadySelected =
+      matchingKeys.size > 0 &&
+      Array.from(matchingKeys).every((k) => currentKeys.has(k)) &&
+      matchingKeys.size === currentKeys.size; // exact same set
+
+    if (allAlreadySelected) {
+      this.selectionManager
+        .clear()
+        .then(() => {
+          this.clearSelectionAndCluster();
+        })
+        .catch(() => {
+          this.clearSelectionAndCluster();
+        });
+      return;
+    }
+
+    // Apply selection to Power BI (multi-select chain)
+    this.selectionManager
+      .clear()
+      .then(() => {
+        this.currentSelection = [...matchingSelectionIds];
+        this.persistentSelection = [...matchingSelectionIds];
+
+        // Update marker visibility immediately
+        this.updateMarkersVisibility(this.currentSelection as ISelectionId[]);
+
+        // Select first, then chain remaining with multi-select
+        let chain = this.selectionManager.select(matchingSelectionIds[0]);
+        for (let i = 1; i < matchingSelectionIds.length; i++) {
+          chain = chain.then(() =>
+            this.selectionManager.select(matchingSelectionIds[i], true)
+          );
+        }
+
+        chain
+          .then(() => {
+            this.updateMarkersVisibility(
+              this.currentSelection as ISelectionId[]
+            );
+          })
+          .catch(() => {
+            this.updateMarkersVisibility(
+              this.currentSelection as ISelectionId[]
+            );
+          });
+      })
+      .catch(() => {
+        this.updateMarkersVisibility(this.currentSelection as ISelectionId[]);
+      });
   }
 
   // Get country name from admin code using GeoJSON features
@@ -930,29 +1358,56 @@ export class Visual implements IVisual {
     return null;
   }
 
-  // Build cluster tooltip content
+  // Build cluster tooltip content using same format as choropleth tooltips
   private buildClusterTooltipContent(
-    countryData: Map<string, { countryName: string; obsIds: string[] }>
+    countryStateData: Map<
+      string,
+      { countryName: string; stateName: string; obsIds: string[] }
+    >
   ): string {
-    if (countryData.size === 0) {
+    if (countryStateData.size === 0) {
       return '<div class="tooltip-row"><span class="field-name">No data available</span></div>';
     }
 
+    // Get all obsIds from all groups to determine total count
+    const allObsIds: string[] = [];
+    countryStateData.forEach((data) => {
+      allObsIds.push(...data.obsIds);
+    });
+    const uniqueAllObsIds = Array.from(new Set(allObsIds));
+
+    // If only one observation exists across all groups, show same format as markers
+    if (uniqueAllObsIds.length === 1 && countryStateData.size === 1) {
+      const firstGroup = Array.from(countryStateData.values())[0];
+      const locationInfo: any = {
+        obsId: firstGroup.obsIds[0],
+        country: firstGroup.countryName,
+        state: firstGroup.stateName,
+      };
+      return this.buildCategoricalTooltipContent(locationInfo, undefined);
+    }
+
+    // If multiple observations exist, group by Country and State
     const tooltipParts: string[] = [];
 
-    // Show each country with its ObsID information
-    countryData.forEach((data, adminCode) => {
+    // Show each Country+State group
+    countryStateData.forEach((group) => {
+      // Add Country
       tooltipParts.push(
-        `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${data.countryName}</span></div>`
+        `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${group.countryName}</span></div>`
       );
 
-      // Ensure unique ObsIDs to avoid repeat entries
-      const uniqueObsIds = Array.from(new Set(data.obsIds));
+      // Add State
+      tooltipParts.push(
+        `<div class="tooltip-row"><span class="field-name">State</span><span class="field-value">${group.stateName}</span></div>`
+      );
 
+      // Add ObsID or Obs Count
+      const uniqueObsIds = Array.from(new Set(group.obsIds));
       if (uniqueObsIds.length === 1) {
         // Show actual ObsID when count is 1
         tooltipParts.push(
-          `<div class="tooltip-row"><span class="field-name">Obs</span><span class="field-value">${uniqueObsIds[0]}</span></div>`
+          `<div class="tooltip-row"><span class="field-name">Obs ID</span><span class="field-value">${uniqueObsIds[0]}</span></div>`
         );
       } else {
         // Show count when more than 1
@@ -987,34 +1442,6 @@ export class Visual implements IVisual {
           });
         }
       }
-    }
-  }
-
-  // Simple helper function to load map data
-  private loadMapData() {
-    const startTime = performance.now();
-
-    try {
-      const geoData = customGeoJSON;
-
-      // Add to base map layer
-      this.baseMapLayer.addData(geoData);
-      this.map.addLayer(this.baseMapLayer);
-
-      // Mark map as loaded
-      this.mapLoaded = true;
-
-      // Load disputed borders from URL only after map is fully loaded
-      setTimeout(() => {
-        this.handleDisputedBordersUrlChange();
-      }, 100);
-
-      // Don't fit bounds - keep our desired zoom level 2
-      // This prevents the jarring zoom-in-then-zoom-out effect
-
-      this.logPerformance("Map data loading", startTime);
-    } catch (error) {
-      this.map.setView([20, 0], 2);
     }
   }
 
@@ -1361,8 +1788,13 @@ export class Visual implements IVisual {
   private onEachChoroplethFeature(feature: any, layer: L.Layer): void {
     // Use cached admin codes instead of calling getAdminCodesFromData repeatedly
     const adminCodes = this.cachedAdminCodes;
-    const gaulCode = feature.properties?.gaul0_code;
-    const isMatch = adminCodes.includes(String(gaulCode));
+    const gaulCode = feature.properties?.gaul_code;
+    const gaulCodeStr = String(gaulCode);
+    const isMatch = adminCodes.includes(gaulCodeStr);
+
+    console.log(
+      `[Choropleth Feature] gaulCode: ${gaulCode}, gaulCodeStr: ${gaulCodeStr}, isMatch: ${isMatch}, adminCodes.length: ${adminCodes.length}`
+    );
 
     if (isMatch) {
       // Get choropleth tooltip data for this region
@@ -1373,14 +1805,50 @@ export class Visual implements IVisual {
         feature.properties?.disp_en ||
         "Unknown Region";
 
+      console.log(
+        `[Choropleth Feature] Setting up click handler for gaulCode: ${gaulCode}, regionName: ${regionName}`
+      );
+
       layer.on("click", (e) => {
-        // Show tooltip on click with choropleth data using same format as markers
-        const tooltipContent = this.buildChoroplethTooltipContent(gaulCode);
-        this.showTooltip(tooltipContent, e.latlng);
+        console.log(
+          `[Choropleth Click] Clicked on choropleth region - gaulCode: ${gaulCode}, regionName: ${regionName}`
+        );
+
+        try {
+          // Show tooltip on click with choropleth data using same format as markers
+          const tooltipContent = this.buildChoroplethTooltipContent(gaulCode);
+          console.log(
+            `[Choropleth Click] Tooltip content generated:`,
+            tooltipContent
+              ? `${tooltipContent.substring(0, 100)}...`
+              : "null/empty"
+          );
+
+          if (tooltipContent) {
+            this.showTooltip(tooltipContent, e.latlng);
+            console.log(`[Choropleth Click] Tooltip shown successfully`);
+          } else {
+            console.warn(
+              `[Choropleth Click] Tooltip content is empty/null, not showing tooltip`
+            );
+          }
+
+          // Apply selection to filter other visuals based on GAUL code
+          this.selectByAdminGaulCode(gaulCode);
+        } catch (error) {
+          console.error(
+            `[Choropleth Click] Error building/showing tooltip:`,
+            error
+          );
+        }
 
         // Stop event propagation to prevent map click
         L.DomEvent.stopPropagation(e);
       });
+    } else {
+      console.log(
+        `[Choropleth Feature] No click handler - gaulCode ${gaulCode} not in adminCodes`
+      );
     }
   }
 
@@ -1400,20 +1868,34 @@ export class Visual implements IVisual {
     ) {
       const columns = this.currentDataView.table.columns;
       const tableAdminCodes = this.currentDataView.table.rows
-        .map((row) => this.getLatLngAdminForRow(row, columns).adminCode)
-        .filter((code) => !!code) as string[];
-      adminCodes.push(...tableAdminCodes);
+        .map((row) => {
+          const info = this.getLatLngAdminForRow(row, columns);
+          return info.adminCode ? String(info.adminCode) : null;
+        })
+        .filter((code) => code !== null && code !== undefined) as string[];
+
+      // Remove duplicates and add to adminCodes
+      const uniqueAdminCodes = Array.from(new Set(tableAdminCodes));
+      adminCodes.push(...uniqueAdminCodes);
     }
     // Handle categorical data (fallback)
     else if (this.currentDataView?.categorical?.categories) {
       const locationCategory = this.currentDataView.categorical.categories[0];
       if (locationCategory && locationCategory.values) {
-        locationCategory.values.forEach((locationValue: any) => {
-          const locationInfo = this.parseLocationField(locationValue);
-          if (locationInfo.adminCode) {
-            adminCodes.push(locationInfo.adminCode);
-          }
-        });
+        const categoricalAdminCodes = locationCategory.values
+          .map((locationValue: any) => {
+            const locationInfo = this.parseLocationField(locationValue);
+            return locationInfo.adminCode
+              ? String(locationInfo.adminCode)
+              : null;
+          })
+          .filter((code) => code !== null && code !== undefined) as string[];
+
+        // Remove duplicates and add to adminCodes
+        const uniqueCategoricalCodes = Array.from(
+          new Set(categoricalAdminCodes)
+        );
+        adminCodes.push(...uniqueCategoricalCodes);
       }
     }
 
@@ -1457,10 +1939,11 @@ export class Visual implements IVisual {
     return null;
   }
 
-  // Build choropleth tooltip content using same format as cluster tooltips
+  // Build choropleth tooltip content using same format as markers/cluster tooltips
   private buildChoroplethTooltipContent(gaulCode: any): string {
-    const obsIds: string[] = [];
-    let countryName: string | null = null;
+    console.log(
+      `[Build Choropleth Tooltip] Starting for gaulCode: ${gaulCode}`
+    );
 
     // Handle table data (primary format)
     if (
@@ -1468,69 +1951,156 @@ export class Visual implements IVisual {
       this.currentDataView?.table?.rows
     ) {
       const columns = this.currentDataView.table.columns;
+      const totalRows = this.currentDataView.table.rows.length;
+      console.log(
+        `[Build Choropleth Tooltip] Table data available - columns: ${columns.length}, rows: ${totalRows}`
+      );
 
       // Find ALL rows that match this GAUL code
       const matchingRows = this.currentDataView.table.rows.filter((row) => {
         const info = this.getLatLngAdminForRow(row, columns);
-        return (
+        const matches =
           info.adminCode !== undefined &&
-          String(info.adminCode) === String(gaulCode)
+          String(info.adminCode) === String(gaulCode);
+        return matches;
+      });
+
+      console.log(
+        `[Build Choropleth Tooltip] Matching rows found: ${matchingRows.length} (out of ${totalRows} total)`
+      );
+
+      if (matchingRows.length === 0) {
+        console.log(
+          `[Build Choropleth Tooltip] No matching rows, returning default message`
+        );
+        return `Matched Region (Code: ${gaulCode})`;
+      }
+
+      // If only one observation exists, show same format as markers
+      if (matchingRows.length === 1) {
+        console.log(
+          `[Build Choropleth Tooltip] Single observation - building categorical tooltip`
+        );
+        const rowInfo = this.getLatLngAdminForRow(matchingRows[0], columns);
+        console.log(`[Build Choropleth Tooltip] Row info:`, {
+          obsId: rowInfo.obsId,
+          country: rowInfo.country,
+          state: rowInfo.state,
+        });
+        const tooltipContent = this.buildCategoricalTooltipContent(
+          rowInfo,
+          rowInfo.refId
+        );
+        console.log(
+          `[Build Choropleth Tooltip] Single obs tooltip built, length: ${
+            tooltipContent?.length || 0
+          }`
+        );
+        return tooltipContent;
+      }
+
+      // If multiple observations exist, group by Country and State
+      console.log(
+        `[Build Choropleth Tooltip] Multiple observations - grouping by Country+State`
+      );
+      const countryStateMap = new Map<
+        string,
+        { countryName: string; stateName: string; obsIds: string[] }
+      >();
+
+      matchingRows.forEach((row, rowIndex) => {
+        const info = this.getLatLngAdminForRow(row, columns);
+        const country =
+          info.country ||
+          this.getCountryNameFromAdminCode(String(gaulCode)) ||
+          `Country ${gaulCode}`;
+        const state = info.state || "-";
+        const obsId = info.obsId;
+
+        console.log(
+          `[Build Choropleth Tooltip] Row ${rowIndex}: country="${country}", state="${state}", obsId="${obsId}"`
+        );
+
+        // Create a unique key for country+state combination
+        const groupKey = `${country}|||${state}`;
+
+        if (!countryStateMap.has(groupKey)) {
+          countryStateMap.set(groupKey, {
+            countryName: country,
+            stateName: state,
+            obsIds: [],
+          });
+        }
+
+        if (obsId !== undefined && obsId !== null && String(obsId) !== "") {
+          const group = countryStateMap.get(groupKey)!;
+          if (!group.obsIds.includes(String(obsId))) {
+            group.obsIds.push(String(obsId));
+          }
+        }
+      });
+
+      console.log(
+        `[Build Choropleth Tooltip] Country+State groups created: ${countryStateMap.size}`
+      );
+      countryStateMap.forEach((group, key) => {
+        console.log(
+          `[Build Choropleth Tooltip] Group "${key}": ${group.obsIds.length} obsIds`
         );
       });
 
-      if (matchingRows.length > 0) {
-        // Get country name from first matching row's location field, or from GeoJSON
-        const firstRowInfo = this.getLatLngAdminForRow(
-          matchingRows[0],
-          columns
+      if (countryStateMap.size === 0) {
+        console.log(
+          `[Build Choropleth Tooltip] No country+state groups, returning default message`
         );
-        countryName =
-          firstRowInfo.country ||
-          this.getCountryNameFromAdminCode(String(gaulCode));
-
-        // Collect all ObsIDs for this country from location field
-        matchingRows.forEach((row) => {
-          const info = this.getLatLngAdminForRow(row, columns);
-          if (
-            info.obsId !== undefined &&
-            info.obsId !== null &&
-            info.obsId !== ""
-          ) {
-            obsIds.push(String(info.obsId));
-          }
-        });
+        return `Matched Region (Code: ${gaulCode})`;
       }
+
+      const tooltipParts: string[] = [];
+
+      // Show each Country+State group
+      countryStateMap.forEach((group) => {
+        // Add Country
+        tooltipParts.push(
+          `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${group.countryName}</span></div>`
+        );
+
+        // Add State
+        tooltipParts.push(
+          `<div class="tooltip-row"><span class="field-name">State</span><span class="field-value">${group.stateName}</span></div>`
+        );
+
+        // Add ObsID or Obs Count
+        const uniqueObsIds = Array.from(new Set(group.obsIds));
+        if (uniqueObsIds.length === 1) {
+          // Show actual ObsID when count is 1
+          tooltipParts.push(
+            `<div class="tooltip-row"><span class="field-name">Obs ID</span><span class="field-value">${uniqueObsIds[0]}</span></div>`
+          );
+        } else {
+          // Show count when more than 1
+          tooltipParts.push(
+            `<div class="tooltip-row"><span class="field-name">Obs Count</span><span class="field-value">${uniqueObsIds.length}</span></div>`
+          );
+        }
+      });
+
+      const finalContent = this.buildTooltipWithOddDividers(tooltipParts);
+      console.log(
+        `[Build Choropleth Tooltip] Final tooltip content built, length: ${
+          finalContent?.length || 0
+        }`
+      );
+      return finalContent;
     }
 
-    if (obsIds.length === 0) {
-      return `Matched Region (Code: ${gaulCode})`;
-    }
-
-    const tooltipParts: string[] = [];
-
-    // Add country information
-    tooltipParts.push(
-      `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${
-        countryName ||
-        this.getCountryNameFromAdminCode(String(gaulCode)) ||
-        `Country ${gaulCode}`
-      }</span></div>`
+    console.warn(
+      `[Build Choropleth Tooltip] No table data available - currentDataView?.table?.columns: ${!!this
+        .currentDataView?.table
+        ?.columns}, currentDataView?.table?.rows: ${!!this.currentDataView
+        ?.table?.rows}`
     );
-
-    // Add ObsID information
-    if (obsIds.length === 1) {
-      // Show actual ObsID when count is 1
-      tooltipParts.push(
-        `<div class="tooltip-row"><span class="field-name">Obs</span><span class="field-value">${obsIds[0]}</span></div>`
-      );
-    } else {
-      // Show count when more than 1
-      tooltipParts.push(
-        `<div class="tooltip-row"><span class="field-name">Obs Count</span><span class="field-value">${obsIds.length}</span></div>`
-      );
-    }
-
-    return this.buildTooltipWithOddDividers(tooltipParts);
+    return `Matched Region (Code: ${gaulCode})`;
   }
 
   // Update choropleth layer with current data
@@ -1561,12 +2131,14 @@ export class Visual implements IVisual {
     const adminCodes = this.getAdminCodesFromData();
 
     // Find matching features and create choropleth polygons
+    // Match only on gaul_code (not gaul0_code)
     const matchingFeatures = this.geoJsonFeatures.filter((feature) => {
       const gaulCode = feature.properties?.gaul_code;
+      if (!gaulCode) {
+        return false;
+      }
       const gaulCodeStr = String(gaulCode);
-
       const isMatch = adminCodes.includes(gaulCodeStr);
-
       return isMatch;
     });
 
@@ -1709,51 +2281,6 @@ export class Visual implements IVisual {
     }
   }
 
-  // Process categorical data from two separate datasets (location and refId)
-  private processCategoricalData(dataView: DataView) {
-    if (!dataView.categorical) {
-      return;
-    }
-
-    // Clear cached admin codes when processing new data
-    this.cachedAdminCodes = [];
-
-    // Get location data from first categorical dataset
-    const locationCategories = dataView.categorical.categories;
-
-    if (!locationCategories || locationCategories.length === 0) {
-      this.clearAllData();
-      this.showEmptyState();
-      return;
-    }
-
-    // Get refId data from table (if available)
-    let refIdData: any[] = [];
-    if (dataView.table && dataView.table.rows) {
-      const refIdColIndex = dataView.table.columns.findIndex(
-        (col) => col.roles?.refId
-      );
-      if (refIdColIndex >= 0) {
-        refIdData = dataView.table.rows.map((row) => row[refIdColIndex]);
-      }
-    }
-
-    const locationCategory = locationCategories[0]; // First dataset
-
-    // Create selection IDs for markers
-    this.createSelectionIdsFromCategorical(dataView);
-
-    // Process markers using categorical data
-    this.processMarkersFromCategoricalWithTable(
-      locationCategory,
-      refIdData,
-      dataView
-    );
-
-    // Force choropleth layer update when both GeoJSON and data are ready
-    this.forceChoroplethUpdate();
-  }
-
   // Process table data (backward compatibility)
   private processTableData(dataView: DataView) {
     if (!dataView.table || !dataView.table.columns || !dataView.table.rows) {
@@ -1796,150 +2323,6 @@ export class Visual implements IVisual {
         .withCategory(locationCategory, index)
         .createSelectionId();
     });
-  }
-
-  // Process markers from categorical data
-  private processMarkersFromCategorical(
-    locationCategory: any,
-    refIdCategory: any,
-    dataView: DataView
-  ) {
-    if (!locationCategory || !locationCategory.values) {
-      return;
-    }
-
-    // Clear existing markers
-    this.markers.forEach((marker) => {
-      this.markerClusterGroup.removeLayer(marker);
-    });
-    this.markers = [];
-
-    // Clear the cluster group
-    this.markerClusterGroup.clearLayers();
-
-    // Process each location value
-    locationCategory.values.forEach((locationValue: any, index: number) => {
-      // Parse location field
-      const locationInfo = this.parseLocationField(locationValue);
-
-      // Get refId if available
-      let refId = undefined;
-      if (
-        refIdCategory &&
-        refIdCategory.values &&
-        refIdCategory.values[index]
-      ) {
-        refId = refIdCategory.values[index];
-      }
-
-      // Only create markers for valid coordinates
-      if (
-        locationInfo.latitude !== undefined &&
-        locationInfo.longitude !== undefined &&
-        !isNaN(locationInfo.latitude) &&
-        !isNaN(locationInfo.longitude)
-      ) {
-        const lat = locationInfo.latitude;
-        const lng = locationInfo.longitude;
-
-        // Always use orange color for markers
-        const markerColor = "#F9B112";
-
-        // Create custom marker with dynamic color styling
-        const customMarkerIcon = L.divIcon({
-          className: "custom-marker",
-          html: `
-              <svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12.5 0C5.596 0 0 5.596 0 12.5c0 9.375 12.5 28.5 12.5 28.5s12.5-19.125 12.5-28.5C25 5.596 19.404 0 12.5 0z" fill="${markerColor}"/>
-                <circle cx="12.5" cy="12.5" r="6" fill="white"/>
-              </svg>
-            `,
-          iconSize: [25, 41],
-          iconAnchor: [12, 41],
-          popupAnchor: [1, -34],
-          tooltipAnchor: [16, -28],
-        });
-
-        const marker = L.marker([lat, lng], {
-          icon: customMarkerIcon,
-        });
-
-        // Add selection ID to marker
-        if (this.selectionIds && this.selectionIds[index]) {
-          (marker as any).options.selectionId = this.selectionIds[index];
-        }
-
-        // Store location info and refId for tooltip
-        (marker as any).locationInfo = locationInfo;
-        (marker as any).refId = refId;
-
-        // Add click handler for selection
-        marker.on("click", (event) => {
-          // Build tooltip content
-          const tooltipContent = this.buildCategoricalTooltipContent(
-            locationInfo,
-            refId
-          );
-          this.showTooltip(tooltipContent, event.latlng);
-
-          // Handle selection if selection ID exists
-          if (this.selectionIds && this.selectionIds[index]) {
-            const clickedSelectionId = this.selectionIds[index];
-
-            // Check if this marker is already selected
-            const isCurrentlySelected = this.currentSelection.some((id) => {
-              if (!id || !clickedSelectionId) return false;
-              if (id.getKey && clickedSelectionId.getKey) {
-                return id.getKey() === clickedSelectionId.getKey();
-              }
-              if (id.toString && clickedSelectionId.toString) {
-                return id.toString() === clickedSelectionId.toString();
-              }
-              return id === clickedSelectionId;
-            });
-
-            if (isCurrentlySelected) {
-              // Deselect the marker
-              this.selectionManager
-                .clear()
-                .then(() => {
-                  this.currentSelection = [];
-                  this.persistentSelection = [];
-                  this.updateMarkersVisibility([]);
-                })
-                .catch((error) => {
-                  // Error clearing selection
-                });
-            } else {
-              // Select the marker
-              this.selectionManager
-                .select(clickedSelectionId)
-                .then((ids: ISelectionId[]) => {
-                  this.currentSelection = ids;
-                  this.persistentSelection = [...ids];
-                  this.updateMarkersVisibility(ids);
-                })
-                .catch((error) => {
-                  // Error selecting marker
-                });
-            }
-          }
-
-          L.DomEvent.stopPropagation(event);
-        });
-
-        // Add marker to cluster group
-        this.markerClusterGroup.addLayer(marker);
-        this.markers.push(marker);
-      }
-    });
-
-    // Only add cluster group to map if base map URL is provided
-    const hasBaseMapUrl =
-      this.settings?.mapSettingsCard?.baseMapUrl?.value?.trim() !== "";
-    if (hasBaseMapUrl && !this.map.hasLayer(this.markerClusterGroup)) {
-      this.markerClusterGroup.addTo(this.map);
-    }
   }
 
   // Process markers from categorical data with table refId data
@@ -2026,16 +2409,25 @@ export class Visual implements IVisual {
           if (this.selectionIds && this.selectionIds[index]) {
             const clickedSelectionId = this.selectionIds[index];
 
+            // Check if clicking on a marker from a selected cluster should deselect the entire cluster
+            if (this.shouldDeselectCluster(marker)) {
+              this.selectionManager
+                .clear()
+                .then(() => {
+                  this.clearSelectionAndCluster();
+                })
+                .catch((error) => {
+                  // Error clearing selection
+                });
+              return; // Exit early, don't do individual marker selection
+            }
+
             // Check if this marker is already selected
             const isCurrentlySelected = this.currentSelection.some((id) => {
               if (!id || !clickedSelectionId) return false;
-              if (id.getKey && clickedSelectionId.getKey) {
-                return id.getKey() === clickedSelectionId.getKey();
-              }
-              if (id.toString && clickedSelectionId.toString) {
-                return id.toString() === clickedSelectionId.toString();
-              }
-              return id === clickedSelectionId;
+              const markerKey = this.getSelectionIdKey(clickedSelectionId);
+              const selectedKey = this.getSelectionIdKey(id);
+              return markerKey === selectedKey;
             });
 
             if (isCurrentlySelected) {
@@ -2043,9 +2435,7 @@ export class Visual implements IVisual {
               this.selectionManager
                 .clear()
                 .then(() => {
-                  this.currentSelection = [];
-                  this.persistentSelection = [];
-                  this.updateMarkersVisibility([]);
+                  this.clearSelectionAndCluster();
                 })
                 .catch((error) => {
                   // Error clearing selection
@@ -2108,6 +2498,13 @@ export class Visual implements IVisual {
     ) {
       tooltipParts.push(
         `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${locationInfo.country}</span></div>`
+      );
+    }
+
+    // Add State from location field if available (including "-")
+    if (locationInfo.state !== undefined && locationInfo.state !== null) {
+      tooltipParts.push(
+        `<div class="tooltip-row"><span class="field-name">State</span><span class="field-value">${locationInfo.state}</span></div>`
       );
     }
 
@@ -2243,16 +2640,25 @@ export class Visual implements IVisual {
           if (this.selectionIds && this.selectionIds[originalRowIndex]) {
             const clickedSelectionId = this.selectionIds[originalRowIndex];
 
+            // Check if clicking on a marker from a selected cluster should deselect the entire cluster
+            if (this.shouldDeselectCluster(marker)) {
+              this.selectionManager
+                .clear()
+                .then(() => {
+                  this.clearSelectionAndCluster();
+                })
+                .catch((error) => {
+                  // Error clearing selection
+                });
+              return; // Exit early, don't do individual marker selection
+            }
+
             // Check if this marker is already selected
             const isCurrentlySelected = this.currentSelection.some((id) => {
               if (!id || !clickedSelectionId) return false;
-              if (id.getKey && clickedSelectionId.getKey) {
-                return id.getKey() === clickedSelectionId.getKey();
-              }
-              if (id.toString && clickedSelectionId.toString) {
-                return id.toString() === clickedSelectionId.toString();
-              }
-              return id === clickedSelectionId;
+              const markerKey = this.getSelectionIdKey(clickedSelectionId);
+              const selectedKey = this.getSelectionIdKey(id);
+              return markerKey === selectedKey;
             });
 
             if (isCurrentlySelected) {
@@ -2260,10 +2666,7 @@ export class Visual implements IVisual {
               this.selectionManager
                 .clear()
                 .then(() => {
-                  this.currentSelection = [];
-                  this.persistentSelection = [];
-                  // Show markers in filtered data
-                  this.updateMarkersVisibility([]);
+                  this.clearSelectionAndCluster();
                 })
                 .catch((error) => {
                   // Error clearing selection
@@ -2362,7 +2765,15 @@ export class Visual implements IVisual {
     let hiddenMarkers = 0;
 
     this.markers.forEach((marker, index) => {
-      const markerSelectionId = (marker as any).options.selectionId;
+      let markerSelectionId = (marker as any).options?.selectionId;
+
+      // Fallback: get from this.selectionIds array if not stored on marker
+      if (!markerSelectionId && this.selectionIds && this.selectionIds[index]) {
+        markerSelectionId = this.selectionIds[index];
+        // Store it on the marker for future use
+        (marker as any).options = (marker as any).options || {};
+        (marker as any).options.selectionId = markerSelectionId;
+      }
 
       // Skip markers without selection IDs
       if (!markerSelectionId) {
@@ -2374,22 +2785,33 @@ export class Visual implements IVisual {
       // 1. It's in the current filtered data view (Power BI filtering), OR
       // 2. It's explicitly selected by the user (cross-filtering)
       const isInFilteredData = this.isMarkerInFilteredData(markerSelectionId);
-      const isExplicitlySelected = selectedIds.some((id) => {
-        if (!id) return false;
 
-        if (id.getKey && markerSelectionId.getKey) {
-          return id.getKey() === markerSelectionId.getKey();
-        }
-        if (id.toString && markerSelectionId.toString) {
-          return id.toString() === markerSelectionId.toString();
-        }
-        return id === markerSelectionId;
+      // Use key-based comparison for reliable matching (same as cluster filtering)
+      const markerKey = this.getSelectionIdKey(markerSelectionId);
+      const selectedKeys = new Set(
+        selectedIds.map((id) => this.getSelectionIdKey(id))
+      );
+      const isExplicitlySelected = selectedKeys.has(markerKey);
+
+      // Also check if this marker is in selectedIds by direct object comparison as fallback
+      const isDirectlySelected = selectedIds.some((selectedId) => {
+        if (!selectedId) return false;
+        // Try direct comparison first
+        if (selectedId === markerSelectionId) return true;
+        // Try key comparison (already done above, but checking again for debug)
+        return this.getSelectionIdKey(selectedId) === markerKey;
       });
 
+      // Use whichever match works
+      const isSelected = isExplicitlySelected || isDirectlySelected;
+
       // For manual selection: show all markers but dim non-selected ones
-      // For Power BI filtering: show markers that are in the filtered data
+      // For Power BI filtering: show markers that are in the filtered data OR are explicitly selected
+      // When markers are selected, we should show them even if Power BI filtered them out
       const shouldBeVisible =
-        selectedIds.length > 0 ? isInFilteredData : isInFilteredData;
+        selectedIds.length > 0
+          ? isInFilteredData || isSelected
+          : isInFilteredData;
 
       if (shouldBeVisible) {
         // Show marker
@@ -2402,16 +2824,17 @@ export class Visual implements IVisual {
 
         // Apply opacity based on selection and Ref ID filtering
         const markerElement = marker.getElement();
+
         if (markerElement) {
           // Get Ref ID filtering state
           const isRefIdFiltered = (marker as any).refIdFiltered;
 
           if (selectedIds.length > 0) {
             // If there are selections, dim non-selected markers
-            const isSelected = isExplicitlySelected;
+            // Use the combined check (key-based or direct comparison)
             if (isSelected) {
-              // Selected marker: use Ref ID filtering opacity
-              markerElement.style.opacity = isRefIdFiltered ? "1" : "0.3";
+              // Selected marker: always use full opacity - use helper method
+              this.setMarkerOpacityTo1(markerElement, index);
             } else {
               // Non-selected marker: dim further
               markerElement.style.opacity = isRefIdFiltered ? "0.5" : "0.15";
@@ -2419,6 +2842,47 @@ export class Visual implements IVisual {
           } else {
             // No selections, use Ref ID filtering opacity
             markerElement.style.opacity = isRefIdFiltered ? "1" : "0.3";
+          }
+        } else {
+          // Marker element not available yet - likely still in a cluster
+          // Store selection state so we can apply it when element becomes available
+          if (isSelected) {
+            (marker as any)._shouldHaveOpacity1 = true;
+            (marker as any)._isSelected = true;
+
+            // Try to get element with a delay in case cluster is expanding/spiderfying
+            setTimeout(() => {
+              const delayedElement = marker.getElement();
+              if (delayedElement) {
+                this.setMarkerOpacityTo1(delayedElement, index);
+              }
+            }, 300);
+          }
+
+          // Wait for marker to be added to map (when it becomes visible outside cluster after spiderfy)
+          // Use once() to avoid multiple listeners - check if already attached
+          if (!(marker as any)._opacityListenerAttached) {
+            (marker as any)._opacityListenerAttached = true;
+            marker.once("add", () => {
+              setTimeout(() => {
+                const element = marker.getElement();
+                if (element) {
+                  const markerKey = this.getSelectionIdKey(markerSelectionId);
+                  const selectedKeys = new Set(
+                    selectedIds.map((id) => this.getSelectionIdKey(id))
+                  );
+                  const isSelected =
+                    selectedKeys.has(markerKey) || (marker as any)._isSelected;
+
+                  if (isSelected) {
+                    this.setMarkerOpacityTo1(element, index);
+                  } else {
+                    const isRefIdFiltered = (marker as any).refIdFiltered;
+                    element.style.opacity = isRefIdFiltered ? "0.5" : "0.15";
+                  }
+                }
+              }, 50);
+            });
           }
         }
       } else {
@@ -2437,41 +2901,403 @@ export class Visual implements IVisual {
     this.performEmptyStateCheck();
   }
 
+  // Helper method to check if clicking a marker from a selected cluster should deselect the cluster
+  private shouldDeselectCluster(marker: L.Marker): boolean {
+    // Check if this marker is part of the last selected cluster
+    const isFromLastSelectedCluster =
+      this.lastSelectedClusterMarkers.has(marker);
+
+    // Check if ALL markers from the last selected cluster are currently selected
+    if (
+      isFromLastSelectedCluster &&
+      this.lastSelectedClusterSelectionIds.length > 0
+    ) {
+      const allClusterMarkersSelected =
+        this.lastSelectedClusterSelectionIds.every((clusterId) => {
+          return this.currentSelection.some((selectedId) => {
+            if (!selectedId || !clusterId) return false;
+            const clusterKey = this.getSelectionIdKey(clusterId);
+            const selectedKey = this.getSelectionIdKey(selectedId);
+            return clusterKey === selectedKey;
+          });
+        });
+      return allClusterMarkersSelected;
+    }
+    return false;
+  }
+
+  // Helper method to clear selection and cluster tracking
+  private clearSelectionAndCluster() {
+    this.currentSelection = [];
+    this.persistentSelection = [];
+    this.lastSelectedClusterMarkers.clear();
+    this.lastSelectedClusterSelectionIds = [];
+    this.updateMarkersVisibility([]);
+  }
+
+  // Helper method to hide markers using display: none
+  private hideClusterMarkers(markers: L.Marker[]) {
+    markers.forEach((marker) => {
+      const element = marker.getElement();
+      if (element) {
+        element.style.display = "none";
+        element.classList.add("hidden-by-cluster");
+        // Also hide any icon element
+        const iconElement = element.querySelector(".leaflet-marker-icon");
+        if (iconElement) {
+          (iconElement as HTMLElement).style.display = "none";
+        }
+      } else {
+        // Marker element not ready yet - try again after a delay
+        setTimeout(() => {
+          const delayedElement = marker.getElement();
+          if (delayedElement) {
+            delayedElement.style.display = "none";
+            delayedElement.classList.add("hidden-by-cluster");
+            const iconElement = delayedElement.querySelector(
+              ".leaflet-marker-icon"
+            );
+            if (iconElement) {
+              (iconElement as HTMLElement).style.display = "none";
+            }
+          }
+        }, 200);
+      }
+    });
+  }
+
+  // Helper method to set marker opacity to 1 with !important
+  // This method will also monitor and reapply if opacity gets changed
+  private setMarkerOpacityTo1(element: HTMLElement, markerIndex: number) {
+    // Store marker index on element for monitoring
+    (element as any)._selectedMarkerIndex = markerIndex;
+
+    const applyOpacity = () => {
+      element.style.opacity = "1";
+      const currentStyle = element.getAttribute("style") || "";
+      const newStyle =
+        currentStyle
+          .replace(/opacity\s*:\s*[^;]*;?/gi, "")
+          .replace(/;\s*$/, "")
+          .trim() + "; opacity: 1 !important;";
+      element.setAttribute("style", newStyle);
+
+      // Also set a data attribute as a flag
+      element.setAttribute("data-selected-opacity", "1");
+    };
+
+    applyOpacity();
+
+    // Monitor and reapply if opacity changes (to handle cases where it gets overridden)
+    const checkInterval = setInterval(() => {
+      if (!element.parentElement) {
+        // Element removed, stop checking
+        clearInterval(checkInterval);
+        return;
+      }
+
+      const computedOpacity = window.getComputedStyle(element).opacity;
+      const styleOpacity = element.style.opacity;
+
+      // If opacity is not 1, reapply it
+      if (computedOpacity !== "1" && styleOpacity !== "1") {
+        applyOpacity();
+        if (markerIndex < 30) {
+        }
+      }
+    }, 200);
+
+    // Stop monitoring after 10 seconds (markers should be stable by then)
+    setTimeout(() => {
+      clearInterval(checkInterval);
+    }, 10000);
+
+    // Verify it was set correctly after a delay
+    setTimeout(() => {
+      const computedOpacity = window.getComputedStyle(element).opacity;
+      const styleOpacity = element.style.opacity;
+      if (markerIndex < 30) {
+        if (computedOpacity !== "1" || styleOpacity !== "1") {
+          // Try to reapply immediately
+          applyOpacity();
+        } else {
+        }
+      }
+    }, 100);
+  }
+
+  // Apply opacity to selected markers when their elements become available
+  private applyOpacityToSelectedMarkers(retryCount: number = 0) {
+    const maxRetries = 5; // Limit retries to prevent infinite loop
+
+    if (this.currentSelection.length === 0) {
+      return;
+    }
+
+    if (retryCount >= maxRetries) {
+      // Stop retrying after max attempts
+      return;
+    }
+
+    const selectedKeys = new Set(
+      this.currentSelection.map((id) => this.getSelectionIdKey(id))
+    );
+
+    let foundCount = 0;
+    let appliedCount = 0;
+
+    this.markers.forEach((marker, index) => {
+      const markerSelectionId = (marker as any).options?.selectionId;
+      if (!markerSelectionId) return;
+
+      const markerKey = this.getSelectionIdKey(markerSelectionId);
+      if (!selectedKeys.has(markerKey)) return;
+
+      foundCount++;
+      const markerElement = marker.getElement();
+      if (markerElement) {
+        // Marker element is now available, apply opacity using helper method
+        this.setMarkerOpacityTo1(markerElement, index);
+        appliedCount++;
+      }
+    });
+
+    // If some markers still don't have elements and we haven't exceeded max retries, schedule another check
+    if (
+      foundCount > 0 &&
+      appliedCount < foundCount &&
+      retryCount < maxRetries - 1
+    ) {
+      setTimeout(() => {
+        this.applyOpacityToSelectedMarkers(retryCount + 1);
+      }, 500);
+    }
+  }
+
   private updateClusterOpacity(selectedIds: ISelectionId[]) {
-    // Use a timeout to ensure clusters are rendered before updating opacity
+    // Use a timeout to ensure clusters are rendered and marker opacity is set first
     setTimeout(() => {
       const clusterElements = document.querySelectorAll(
         ".marker-cluster-small, .marker-cluster-medium, .marker-cluster-large"
       );
 
-      clusterElements.forEach((clusterElement) => {
-        // Access the Leaflet layer via DOM traversal is not reliable; instead, approximate by checking child markers' selection
-        // We'll compute based on bounds overlap with selected markers' layers present in the cluster group
-        // Simpler approach: if any visible selected marker exists, dim clusters that don't contain selected markers
+      if (selectedIds.length === 0) {
+        // No selections - set all clusters to full opacity
+        clusterElements.forEach((clusterElement) => {
+          const elem = clusterElement as HTMLElement;
+          elem.style.opacity = "1";
+          // Force with !important
+          const currentStyle = elem.getAttribute("style") || "";
+          const newStyle =
+            currentStyle
+              .replace(/opacity\s*:\s*[^;]*;?/gi, "")
+              .replace(/;\s*$/, "")
+              .trim() + "; opacity: 1 !important;";
+          elem.setAttribute("style", newStyle);
+        });
+        return;
+      }
 
-        if (selectedIds.length === 0) {
-          (clusterElement as HTMLElement).style.opacity = "1";
-          return;
+      // Create a set of selected marker keys for efficient lookup
+      const selectedKeys = new Set(
+        selectedIds.map((id) => this.getSelectionIdKey(id))
+      );
+
+      // Get positions of all selected markers (that are visible and have opacity = 1)
+      const selectedMarkerPositions: Array<{ x: number; y: number }> = [];
+      this.markers.forEach((marker) => {
+        const markerSelectionId = (marker as any).options?.selectionId;
+        if (!markerSelectionId) return;
+
+        const markerKey = this.getSelectionIdKey(markerSelectionId);
+        if (!selectedKeys.has(markerKey)) return;
+
+        // Check if marker is actually selected (has opacity = 1)
+        const markerElement = marker.getElement();
+        if (!markerElement) return;
+
+        const markerStyleOpacity = markerElement.style.opacity;
+        const markerComputedOpacity =
+          window.getComputedStyle(markerElement).opacity;
+        const markerOpacityValue = parseFloat(
+          markerStyleOpacity || markerComputedOpacity
+        );
+
+        // Only consider markers that are actually visible and selected (opacity >= 0.99)
+        if (markerOpacityValue >= 0.99) {
+          const markerLatLng = marker.getLatLng();
+          const markerPoint = this.map.latLngToContainerPoint(markerLatLng);
+          selectedMarkerPositions.push({ x: markerPoint.x, y: markerPoint.y });
+        }
+      });
+
+      // Check each cluster DOM element
+      clusterElements.forEach((clusterElement) => {
+        let hasSelected = false;
+
+        // Get cluster position
+        const clusterRect = (
+          clusterElement as HTMLElement
+        ).getBoundingClientRect();
+        const mapContainer = this.map.getContainer().getBoundingClientRect();
+        const clusterCenterX =
+          clusterRect.left + clusterRect.width / 2 - mapContainer.left;
+        const clusterCenterY =
+          clusterRect.top + clusterRect.height / 2 - mapContainer.top;
+
+        // Check if any selected marker is near this cluster (within cluster radius)
+        // Cluster radius is typically around 40-50 pixels
+        const clusterRadius = 60; // pixels - generous tolerance for cluster size
+        for (const markerPos of selectedMarkerPositions) {
+          const distance = Math.sqrt(
+            Math.pow(clusterCenterX - markerPos.x, 2) +
+              Math.pow(clusterCenterY - markerPos.y, 2)
+          );
+          if (distance < clusterRadius) {
+            hasSelected = true;
+            break;
+          }
         }
 
-        // Determine if this cluster contains any selected marker by probing nearby markers via DOM ancestors
-        // Fallback heuristic: if any selected marker element exists inside this cluster element
-        const markerChildren = clusterElement.querySelectorAll(
-          ".leaflet-marker-icon"
-        );
-        let hasSelected = false;
-        markerChildren.forEach((el) => {
-          const opacity = (el as HTMLElement).style.opacity;
-          if (opacity === "1") {
-            hasSelected = true;
-          }
-        });
+        // If still not found, try finding the Leaflet cluster layer
+        if (!hasSelected) {
+          // Get all visible cluster layers from Leaflet
+          this.markerClusterGroup.eachLayer((layer: any) => {
+            // Check if this is a cluster (has getAllChildMarkers method)
+            if (
+              layer.getAllChildMarkers &&
+              typeof layer.getAllChildMarkers === "function"
+            ) {
+              const layerLatLng = layer.getLatLng();
+              const layerPoint = this.map.latLngToContainerPoint(layerLatLng);
 
-        (clusterElement as HTMLElement).style.opacity = hasSelected
-          ? "1"
-          : "0.5";
+              // Check if this DOM element corresponds to this cluster layer
+              const distance = Math.sqrt(
+                Math.pow(clusterCenterX - layerPoint.x, 2) +
+                  Math.pow(clusterCenterY - layerPoint.y, 2)
+              );
+
+              if (distance < 50) {
+                // This is the cluster - check if any of its child markers are selected
+                const childMarkers = layer.getAllChildMarkers();
+                childMarkers.forEach((marker: L.Marker) => {
+                  const markerSelectionId = (marker as any).options
+                    ?.selectionId;
+                  if (!markerSelectionId) return;
+
+                  const markerKey = this.getSelectionIdKey(markerSelectionId);
+                  if (selectedKeys.has(markerKey)) {
+                    hasSelected = true;
+                  }
+                });
+              }
+            }
+          });
+        }
+
+        // Set cluster opacity: full opacity if it contains selected markers, dimmed otherwise
+        const clusterOpacity = hasSelected ? "1" : "0.5";
+        const elem = clusterElement as HTMLElement;
+        elem.style.opacity = clusterOpacity;
+
+        // Force opacity with !important to prevent overrides
+        const currentStyle = elem.getAttribute("style") || "";
+        const newStyle =
+          currentStyle
+            .replace(/opacity\s*:\s*[^;]*;?/gi, "")
+            .replace(/;\s*$/, "")
+            .trim() + `; opacity: ${clusterOpacity} !important;`;
+        elem.setAttribute("style", newStyle);
       });
-    }, 100);
+    }, 250); // Increased timeout to ensure everything is rendered and marker opacity is set
+
+    // Additional delayed update to catch any re-renders or animations
+    setTimeout(() => {
+      const clusterElements = document.querySelectorAll(
+        ".marker-cluster-small, .marker-cluster-medium, .marker-cluster-large"
+      );
+
+      if (selectedIds.length === 0) {
+        clusterElements.forEach((clusterElement) => {
+          const elem = clusterElement as HTMLElement;
+          elem.style.opacity = "1";
+          const currentStyle = elem.getAttribute("style") || "";
+          const newStyle =
+            currentStyle
+              .replace(/opacity\s*:\s*[^;]*;?/gi, "")
+              .replace(/;\s*$/, "")
+              .trim() + "; opacity: 1 !important;";
+          elem.setAttribute("style", newStyle);
+        });
+        return;
+      }
+
+      // Create a set of selected marker keys
+      const selectedKeys = new Set(
+        selectedIds.map((id) => this.getSelectionIdKey(id))
+      );
+
+      // Get positions of selected markers
+      const selectedMarkerPositions: Array<{ x: number; y: number }> = [];
+      this.markers.forEach((marker) => {
+        const markerSelectionId = (marker as any).options?.selectionId;
+        if (!markerSelectionId) return;
+
+        const markerKey = this.getSelectionIdKey(markerSelectionId);
+        if (!selectedKeys.has(markerKey)) return;
+
+        const markerElement = marker.getElement();
+        if (!markerElement) return;
+
+        const markerStyleOpacity = markerElement.style.opacity;
+        const markerComputedOpacity =
+          window.getComputedStyle(markerElement).opacity;
+        const markerOpacityValue = parseFloat(
+          markerStyleOpacity || markerComputedOpacity
+        );
+
+        if (markerOpacityValue >= 0.99) {
+          const markerLatLng = marker.getLatLng();
+          const markerPoint = this.map.latLngToContainerPoint(markerLatLng);
+          selectedMarkerPositions.push({ x: markerPoint.x, y: markerPoint.y });
+        }
+      });
+
+      clusterElements.forEach((clusterElement) => {
+        let hasSelected = false;
+        const clusterRect = (
+          clusterElement as HTMLElement
+        ).getBoundingClientRect();
+        const mapContainer = this.map.getContainer().getBoundingClientRect();
+        const clusterCenterX =
+          clusterRect.left + clusterRect.width / 2 - mapContainer.left;
+        const clusterCenterY =
+          clusterRect.top + clusterRect.height / 2 - mapContainer.top;
+
+        const clusterRadius = 60;
+        for (const markerPos of selectedMarkerPositions) {
+          const distance = Math.sqrt(
+            Math.pow(clusterCenterX - markerPos.x, 2) +
+              Math.pow(clusterCenterY - markerPos.y, 2)
+          );
+          if (distance < clusterRadius) {
+            hasSelected = true;
+            break;
+          }
+        }
+
+        const clusterOpacity = hasSelected ? "1" : "0.5";
+        const elem = clusterElement as HTMLElement;
+        elem.style.opacity = clusterOpacity;
+        const currentStyle = elem.getAttribute("style") || "";
+        const newStyle =
+          currentStyle
+            .replace(/opacity\s*:\s*[^;]*;?/gi, "")
+            .replace(/;\s*$/, "")
+            .trim() + `; opacity: ${clusterOpacity} !important;`;
+        elem.setAttribute("style", newStyle);
+      });
+    }, 500); // Secondary update after animations complete
   }
 
   private isMarkerInFilteredData(markerSelectionId: ISelectionId): boolean {
@@ -2511,9 +3337,36 @@ export class Visual implements IVisual {
   }
 
   private showTooltip(content: string, latlng: L.LatLng) {
-    if (this.tooltipDiv) {
+    console.log(
+      `[Show Tooltip] Called with content length: ${
+        content?.length || 0
+      }, latlng:`,
+      latlng
+    );
+
+    if (!this.tooltipDiv) {
+      console.error(
+        `[Show Tooltip] tooltipDiv is null/undefined, cannot show tooltip`
+      );
+      return;
+    }
+
+    if (!content || content.trim() === "") {
+      console.warn(`[Show Tooltip] Content is empty/null, not showing tooltip`);
+      return;
+    }
+
+    try {
+      // Calculate max height based on visual container height
+      const visualHeight = this.target.clientHeight || this.target.offsetHeight;
+      const maxTooltipHeight = visualHeight - 50; // Leave 20px margin from top/bottom
+
+      console.log(
+        `[Show Tooltip] Visual height: ${visualHeight}, maxTooltipHeight: ${maxTooltipHeight}`
+      );
+
       const tooltipWithCloseButton = `
-        <div style="position: relative;">
+        <div style="position: relative; display: flex; flex-direction: column; height: 100%;">
           <button 
             onclick="this.parentElement.parentElement.style.opacity='0'" 
             style="
@@ -2539,7 +3392,14 @@ export class Visual implements IVisual {
             onmouseout="this.style.color='#CBCBCB'"
             title="Close tooltip"
           >×</button>
-          ${content}
+          <div style="
+            max-height: ${maxTooltipHeight}px;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding-right: 2px;
+          ">
+            ${content}
+          </div>
         </div>
       `;
 
@@ -2547,52 +3407,16 @@ export class Visual implements IVisual {
       this.tooltipDiv.style.opacity = "1";
       this.tooltipDiv.style.left = "10px";
       this.tooltipDiv.style.top = "10px";
+
+      // Set max-height on the tooltip container itself
+      this.tooltipDiv.style.maxHeight = `${maxTooltipHeight}px`;
+
+      console.log(
+        `[Show Tooltip] Tooltip displayed successfully - opacity: ${this.tooltipDiv.style.opacity}, left: ${this.tooltipDiv.style.left}, top: ${this.tooltipDiv.style.top}`
+      );
+    } catch (error) {
+      console.error(`[Show Tooltip] Error setting up tooltip:`, error);
     }
-  }
-
-  private buildMarkerTooltipContent(row: any[], columns: any[]): string {
-    const tooltipParts: string[] = [];
-
-    // Find tooltip column indices
-    const tooltipColIndices = columns
-      .map((col, index) => (col.roles?.tooltip ? index : -1))
-      .filter((index) => index !== -1);
-
-    // Add tooltip data from Power BI tooltip fields
-    if (tooltipColIndices.length > 0) {
-      tooltipColIndices.forEach((colIndex) => {
-        const value = row[colIndex];
-        const columnName = columns[colIndex].displayName;
-
-        if (
-          value !== null &&
-          value !== undefined &&
-          value !== "" &&
-          value !== "NA"
-        ) {
-          tooltipParts.push(
-            `<div class="tooltip-row"><span class="field-name">${columnName}</span><span class="field-value">${value}</span></div>`
-          );
-        }
-      });
-    }
-
-    // If no tooltip data found, show coordinates as fallback
-    if (tooltipParts.length === 0) {
-      const info = this.getLatLngAdminForRow(row, columns);
-      if (info.latitude !== undefined && info.longitude !== undefined) {
-        const lat = info.latitude;
-        const lng = info.longitude;
-        tooltipParts.push(
-          `<div class="tooltip-row"><span class="field-name">Latitude</span><span class="field-value">${lat}</span></div>`
-        );
-        tooltipParts.push(
-          `<div class="tooltip-row"><span class="field-name">Longitude</span><span class="field-value">${lng}</span></div>`
-        );
-      }
-    }
-
-    return this.buildTooltipWithOddDividers(tooltipParts);
   }
 
   private showEmptyState() {
@@ -2686,47 +3510,12 @@ export class Visual implements IVisual {
     }
   }
 
-  private getCurrentDataContext(): ISelectionId[] {
-    try {
-      return this.selectionIds.filter((id, index) => {
-        return (
-          this.markers[index] &&
-          this.markerClusterGroup.hasLayer(this.markers[index])
-        );
-      });
-    } catch (error) {
-      return [];
-    }
-  }
-
-  private handleMarkerDeselection(clickedMarkerIndex: number): void {
-    try {
-      // When deselecting, show markers that are in the current Power BI filtered data
-      // This respects Power BI filters while clearing manual selections
-      this.updateMarkersVisibility([]);
-    } catch (error) {
-      // Fallback: show markers in filtered data
-      this.updateMarkersVisibility([]);
-    }
-  }
-
   private showOnlyCurrentContextMarkers(): void {
     try {
       // Show markers that are in the current Power BI filtered data
       this.updateMarkersVisibility([]);
     } catch (error) {
       // Error showing current context markers
-    }
-  }
-
-  private restoreSelectionState(): void {
-    try {
-      if (this.persistentSelection.length > 0) {
-        this.currentSelection = [...this.persistentSelection];
-        this.updateMarkersVisibility(this.persistentSelection);
-      }
-    } catch (error) {
-      // Error restoring selection state
     }
   }
 

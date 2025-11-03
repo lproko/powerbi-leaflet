@@ -5,12 +5,6 @@
       "kind": "Grouping",
       "displayName": "Data",
       "description": "Single field containing Lat, Lng, Admin Code, Obs ID, Country"
-    },
-    {
-      "name": "refId",
-      "kind": "GroupingOrMeasure",
-      "displayName": "Ref ID",
-      "description": "Reference ID for the data point"
     }
   ],
   "dataViewMappings": [
@@ -21,16 +15,6 @@
             {
               "for": {
                 "in": "location"
-              }
-            },
-            {
-              "for": {
-                "in": "refId"
-              }
-            },
-            {
-              "for": {
-                "in": "refIdMeasure"
               }
             }
           ]
