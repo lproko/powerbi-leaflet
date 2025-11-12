@@ -42,6 +42,7 @@ export class Visual implements IVisual {
   private debugLocationValueLogCount: number = 0; // Limit raw value logs
   private lastSelectedClusterMarkers: Set<L.Marker> = new Set(); // Track markers from last selected cluster
   private lastSelectedClusterSelectionIds: ISelectionId[] = []; // Track selection IDs from last selected cluster
+  private selectedGaulCodes: Set<string> = new Set(); // Track selected GAUL codes for choropleth highlighting
 
   constructor(options: VisualConstructorOptions) {
     this.target = options.element;
@@ -401,14 +402,16 @@ export class Visual implements IVisual {
     this.setupZoomControls();
   }
 
-  // Helper: build tooltip content with optional dividers after odd rows when > 2 rows
+  // Helper: build tooltip content with optional dividers every 3 lines when > 3 rows
   private buildTooltipWithOddDividers(rows: string[]): string {
     const parts: string[] = [];
-    const shouldInsertDividers = rows.length > 2;
+    // Only show dividers if we have more than 3 rows
+    const shouldInsertDividers = rows.length > 3;
     for (let i = 0; i < rows.length; i++) {
       parts.push(rows[i]);
-      // Insert divider after even-numbered rows (1-based: after rows 2,4,6,...) but not after the last row
-      if (shouldInsertDividers && i % 2 === 1 && i < rows.length - 1) {
+      // Insert divider after every 3rd row (1-based: after rows 3, 6, 9, ...) but not after the last row
+      // i % 3 === 2 means after indices 2, 5, 8, etc. (after the 3rd, 6th, 9th rows)
+      if (shouldInsertDividers && i % 3 === 2 && i < rows.length - 1) {
         parts.push('<div class="tooltip-divider"></div>');
       }
     }
@@ -1186,10 +1189,16 @@ export class Visual implements IVisual {
               ...clusterSelectionIds,
             ] as ISelectionId[];
 
+            // Update selected GAUL codes from cluster selection
+            this.updateSelectedGaulCodesFromSelection();
+
             // Update marker visibility immediately so UI reflects selection
             this.updateMarkersVisibility(
               this.currentSelection as ISelectionId[]
             );
+
+            // Update choropleth highlighting
+            this.updateChoroplethHighlighting();
 
             // Multi-select approach based on Stack Overflow solution:
             // https://stackoverflow.com/questions/37388223/how-to-multiselect-with-selection-manager-in-power-bi-custom-visual
@@ -1215,30 +1224,39 @@ export class Visual implements IVisual {
 
               selectionChain
                 .then(() => {
+                  // Update selected GAUL codes after cluster selection completes
+                  this.updateSelectedGaulCodesFromSelection();
                   // Update visibility after all selections complete (Power BI may have filtered data)
                   this.updateMarkersVisibility(
                     this.currentSelection as ISelectionId[]
                   );
+                  this.updateChoroplethHighlighting();
                 })
                 .catch(() => {
                   // Even if selection fails, update visibility
+                  this.updateSelectedGaulCodesFromSelection();
                   this.updateMarkersVisibility(
                     this.currentSelection as ISelectionId[]
                   );
+                  this.updateChoroplethHighlighting();
                 });
             } else if (clusterSelectionIds.length === 1) {
               // Single selection
               this.selectionManager
                 .select(clusterSelectionIds[0])
                 .then(() => {
+                  this.updateSelectedGaulCodesFromSelection();
                   this.updateMarkersVisibility(
                     this.currentSelection as ISelectionId[]
                   );
+                  this.updateChoroplethHighlighting();
                 })
                 .catch(() => {
+                  this.updateSelectedGaulCodesFromSelection();
                   this.updateMarkersVisibility(
                     this.currentSelection as ISelectionId[]
                   );
+                  this.updateChoroplethHighlighting();
                 });
             }
           })
@@ -1300,6 +1318,11 @@ export class Visual implements IVisual {
       return;
     }
 
+    // Track selected GAUL code for choropleth highlighting
+    const gaulCodeStr = String(gaulCode);
+    this.selectedGaulCodes.clear();
+    this.selectedGaulCodes.add(gaulCodeStr);
+
     // Apply selection to Power BI (multi-select chain)
     this.selectionManager
       .clear()
@@ -1309,6 +1332,9 @@ export class Visual implements IVisual {
 
         // Update marker visibility immediately
         this.updateMarkersVisibility(this.currentSelection as ISelectionId[]);
+
+        // Update choropleth highlighting
+        this.updateChoroplethHighlighting();
 
         // Select first, then chain remaining with multi-select
         let chain = this.selectionManager.select(matchingSelectionIds[0]);
@@ -1323,15 +1349,18 @@ export class Visual implements IVisual {
             this.updateMarkersVisibility(
               this.currentSelection as ISelectionId[]
             );
+            this.updateChoroplethHighlighting();
           })
           .catch(() => {
             this.updateMarkersVisibility(
               this.currentSelection as ISelectionId[]
             );
+            this.updateChoroplethHighlighting();
           });
       })
       .catch(() => {
         this.updateMarkersVisibility(this.currentSelection as ISelectionId[]);
+        this.updateChoroplethHighlighting();
       });
   }
 
@@ -1774,13 +1803,30 @@ export class Visual implements IVisual {
 
   // Choropleth styling method
   private getChoroplethStyle(feature: any): L.PathOptions {
-    // Since we only add matching features to the choropleth layer, all features should be styled as matches
+    const gaulCode = feature.properties?.gaul_code;
+    const gaulCodeStr = gaulCode ? String(gaulCode) : null;
+    const hasSelection = this.selectedGaulCodes.size > 0;
+    const isSelected = gaulCodeStr && this.selectedGaulCodes.has(gaulCodeStr);
+
+    // Default: all choropleths at full opacity
+    // When selection exists: selected stays at 1.0, others reduce to 0.3
+    if (!hasSelection || isSelected) {
+      return {
+        fillColor: "#455E6F", // Keep original blue-gray color
+        weight: 1,
+        opacity: 1,
+        fillOpacity: 1,
+        color: "black", // Black border for all choropleth features
+      };
+    }
+
+    // Reduced opacity for non-selected choropleth features (only when selection exists)
     return {
-      fillColor: "#455E6F", // Blue-gray for all choropleth features (they are all matches)
+      fillColor: "#455E6F", // Same blue-gray color
       weight: 1,
-      opacity: 1,
-      fillOpacity: 1,
-      color: "black", // Black border for all choropleth features
+      opacity: 0.3,
+      fillOpacity: 0.3,
+      color: "black", // Black border
     };
   }
 
@@ -1792,10 +1838,6 @@ export class Visual implements IVisual {
     const gaulCodeStr = String(gaulCode);
     const isMatch = adminCodes.includes(gaulCodeStr);
 
-    console.log(
-      `[Choropleth Feature] gaulCode: ${gaulCode}, gaulCodeStr: ${gaulCodeStr}, isMatch: ${isMatch}, adminCodes.length: ${adminCodes.length}`
-    );
-
     if (isMatch) {
       // Get choropleth tooltip data for this region
       const choroplethTooltipData =
@@ -1805,28 +1847,13 @@ export class Visual implements IVisual {
         feature.properties?.disp_en ||
         "Unknown Region";
 
-      console.log(
-        `[Choropleth Feature] Setting up click handler for gaulCode: ${gaulCode}, regionName: ${regionName}`
-      );
-
       layer.on("click", (e) => {
-        console.log(
-          `[Choropleth Click] Clicked on choropleth region - gaulCode: ${gaulCode}, regionName: ${regionName}`
-        );
-
         try {
           // Show tooltip on click with choropleth data using same format as markers
           const tooltipContent = this.buildChoroplethTooltipContent(gaulCode);
-          console.log(
-            `[Choropleth Click] Tooltip content generated:`,
-            tooltipContent
-              ? `${tooltipContent.substring(0, 100)}...`
-              : "null/empty"
-          );
 
           if (tooltipContent) {
             this.showTooltip(tooltipContent, e.latlng);
-            console.log(`[Choropleth Click] Tooltip shown successfully`);
           } else {
             console.warn(
               `[Choropleth Click] Tooltip content is empty/null, not showing tooltip`
@@ -1846,9 +1873,6 @@ export class Visual implements IVisual {
         L.DomEvent.stopPropagation(e);
       });
     } else {
-      console.log(
-        `[Choropleth Feature] No click handler - gaulCode ${gaulCode} not in adminCodes`
-      );
     }
   }
 
@@ -1941,10 +1965,6 @@ export class Visual implements IVisual {
 
   // Build choropleth tooltip content using same format as markers/cluster tooltips
   private buildChoroplethTooltipContent(gaulCode: any): string {
-    console.log(
-      `[Build Choropleth Tooltip] Starting for gaulCode: ${gaulCode}`
-    );
-
     // Handle table data (primary format)
     if (
       this.currentDataView?.table?.columns &&
@@ -1952,9 +1972,6 @@ export class Visual implements IVisual {
     ) {
       const columns = this.currentDataView.table.columns;
       const totalRows = this.currentDataView.table.rows.length;
-      console.log(
-        `[Build Choropleth Tooltip] Table data available - columns: ${columns.length}, rows: ${totalRows}`
-      );
 
       // Find ALL rows that match this GAUL code
       const matchingRows = this.currentDataView.table.rows.filter((row) => {
@@ -1965,44 +1982,24 @@ export class Visual implements IVisual {
         return matches;
       });
 
-      console.log(
-        `[Build Choropleth Tooltip] Matching rows found: ${matchingRows.length} (out of ${totalRows} total)`
-      );
-
       if (matchingRows.length === 0) {
-        console.log(
-          `[Build Choropleth Tooltip] No matching rows, returning default message`
-        );
         return `Matched Region (Code: ${gaulCode})`;
       }
 
       // If only one observation exists, show same format as markers
       if (matchingRows.length === 1) {
-        console.log(
-          `[Build Choropleth Tooltip] Single observation - building categorical tooltip`
-        );
         const rowInfo = this.getLatLngAdminForRow(matchingRows[0], columns);
-        console.log(`[Build Choropleth Tooltip] Row info:`, {
-          obsId: rowInfo.obsId,
-          country: rowInfo.country,
-          state: rowInfo.state,
-        });
+
         const tooltipContent = this.buildCategoricalTooltipContent(
           rowInfo,
           rowInfo.refId
         );
-        console.log(
-          `[Build Choropleth Tooltip] Single obs tooltip built, length: ${
-            tooltipContent?.length || 0
-          }`
-        );
+
         return tooltipContent;
       }
 
       // If multiple observations exist, group by Country and State
-      console.log(
-        `[Build Choropleth Tooltip] Multiple observations - grouping by Country+State`
-      );
+
       const countryStateMap = new Map<
         string,
         { countryName: string; stateName: string; obsIds: string[] }
@@ -2016,10 +2013,6 @@ export class Visual implements IVisual {
           `Country ${gaulCode}`;
         const state = info.state || "-";
         const obsId = info.obsId;
-
-        console.log(
-          `[Build Choropleth Tooltip] Row ${rowIndex}: country="${country}", state="${state}", obsId="${obsId}"`
-        );
 
         // Create a unique key for country+state combination
         const groupKey = `${country}|||${state}`;
@@ -2040,19 +2033,7 @@ export class Visual implements IVisual {
         }
       });
 
-      console.log(
-        `[Build Choropleth Tooltip] Country+State groups created: ${countryStateMap.size}`
-      );
-      countryStateMap.forEach((group, key) => {
-        console.log(
-          `[Build Choropleth Tooltip] Group "${key}": ${group.obsIds.length} obsIds`
-        );
-      });
-
       if (countryStateMap.size === 0) {
-        console.log(
-          `[Build Choropleth Tooltip] No country+state groups, returning default message`
-        );
         return `Matched Region (Code: ${gaulCode})`;
       }
 
@@ -2086,11 +2067,7 @@ export class Visual implements IVisual {
       });
 
       const finalContent = this.buildTooltipWithOddDividers(tooltipParts);
-      console.log(
-        `[Build Choropleth Tooltip] Final tooltip content built, length: ${
-          finalContent?.length || 0
-        }`
-      );
+
       return finalContent;
     }
 
@@ -2162,6 +2139,95 @@ export class Visual implements IVisual {
 
     // Hide loader after choropleth processing is complete
     this.hideLoader("choropleth");
+
+    // Update highlighting after layer is updated
+    this.updateChoroplethHighlighting();
+  }
+
+  // Update selected GAUL codes from current marker selection
+  private updateSelectedGaulCodesFromSelection(): void {
+    this.selectedGaulCodes.clear();
+
+    if (!this.currentSelection || this.currentSelection.length === 0) {
+      return;
+    }
+
+    if (
+      !this.currentDataView?.table?.rows ||
+      !this.currentDataView?.table?.columns
+    ) {
+      return;
+    }
+
+    const columns = this.currentDataView.table.columns;
+    const rows = this.currentDataView.table.rows;
+
+    // Get GAUL codes from selected markers
+    this.currentSelection.forEach((selectionId) => {
+      // Find the row index for this selection ID
+      const rowIndex = this.selectionIds.findIndex((id) => {
+        if (!id || !selectionId) return false;
+        if (id.getKey && selectionId.getKey) {
+          return id.getKey() === selectionId.getKey();
+        }
+        if (id.toString && selectionId.toString) {
+          return id.toString() === selectionId.toString();
+        }
+        return id === selectionId;
+      });
+
+      if (rowIndex >= 0 && rowIndex < rows.length) {
+        const row = rows[rowIndex];
+        const info = this.getLatLngAdminForRow(row, columns);
+        if (info.adminCode !== undefined) {
+          this.selectedGaulCodes.add(String(info.adminCode));
+        }
+      }
+    });
+  }
+
+  // Update choropleth highlighting based on selected GAUL codes
+  private updateChoroplethHighlighting(): void {
+    if (!this.choroplethLayer) {
+      return;
+    }
+
+    // Iterate through all layers in the choropleth and update their styles
+    this.choroplethLayer.eachLayer((layer: any) => {
+      if (layer.feature) {
+        const feature = layer.feature;
+        const gaulCode = feature.properties?.gaul_code;
+        const gaulCodeStr = gaulCode ? String(gaulCode) : null;
+        const isSelected =
+          gaulCodeStr && this.selectedGaulCodes.has(gaulCodeStr);
+
+        // Apply appropriate style based on selection state
+        // Default: all choropleths at full opacity (when no selection)
+        // When selection exists: selected stays at 1.0, others reduce to 0.3
+        const hasSelection = this.selectedGaulCodes.size > 0;
+
+        const style =
+          !hasSelection || isSelected
+            ? {
+                fillColor: "#455E6F", // Keep original blue-gray color
+                weight: 1,
+                opacity: 1,
+                fillOpacity: 1,
+                color: "black", // Black border
+              }
+            : {
+                fillColor: "#455E6F", // Same blue-gray color
+                weight: 1,
+                opacity: 0.3,
+                fillOpacity: 0.3,
+                color: "black", // Black border
+              };
+
+        if (layer.setStyle) {
+          layer.setStyle(style);
+        }
+      }
+    });
   }
 
   // Force choropleth layer update when both GeoJSON and data are ready
@@ -2447,7 +2513,9 @@ export class Visual implements IVisual {
                 .then((ids: ISelectionId[]) => {
                   this.currentSelection = ids;
                   this.persistentSelection = [...ids];
+                  this.updateSelectedGaulCodesFromSelection();
                   this.updateMarkersVisibility(ids);
+                  this.updateChoroplethHighlighting();
                 })
                 .catch((error) => {
                   // Error selecting marker
@@ -2678,7 +2746,9 @@ export class Visual implements IVisual {
                 .then((ids: ISelectionId[]) => {
                   this.currentSelection = ids;
                   this.persistentSelection = [...ids];
+                  this.updateSelectedGaulCodesFromSelection();
                   this.updateMarkersVisibility(ids);
+                  this.updateChoroplethHighlighting();
                 })
                 .catch((error) => {
                   // Error selecting marker
@@ -2932,7 +3002,9 @@ export class Visual implements IVisual {
     this.persistentSelection = [];
     this.lastSelectedClusterMarkers.clear();
     this.lastSelectedClusterSelectionIds = [];
+    this.selectedGaulCodes.clear();
     this.updateMarkersVisibility([]);
+    this.updateChoroplethHighlighting();
   }
 
   // Helper method to hide markers using display: none
@@ -3337,13 +3409,6 @@ export class Visual implements IVisual {
   }
 
   private showTooltip(content: string, latlng: L.LatLng) {
-    console.log(
-      `[Show Tooltip] Called with content length: ${
-        content?.length || 0
-      }, latlng:`,
-      latlng
-    );
-
     if (!this.tooltipDiv) {
       console.error(
         `[Show Tooltip] tooltipDiv is null/undefined, cannot show tooltip`
@@ -3360,10 +3425,6 @@ export class Visual implements IVisual {
       // Calculate max height based on visual container height
       const visualHeight = this.target.clientHeight || this.target.offsetHeight;
       const maxTooltipHeight = visualHeight - 50; // Leave 20px margin from top/bottom
-
-      console.log(
-        `[Show Tooltip] Visual height: ${visualHeight}, maxTooltipHeight: ${maxTooltipHeight}`
-      );
 
       const tooltipWithCloseButton = `
         <div style="position: relative; display: flex; flex-direction: column; height: 100%;">
@@ -3410,10 +3471,6 @@ export class Visual implements IVisual {
 
       // Set max-height on the tooltip container itself
       this.tooltipDiv.style.maxHeight = `${maxTooltipHeight}px`;
-
-      console.log(
-        `[Show Tooltip] Tooltip displayed successfully - opacity: ${this.tooltipDiv.style.opacity}, left: ${this.tooltipDiv.style.left}, top: ${this.tooltipDiv.style.top}`
-      );
     } catch (error) {
       console.error(`[Show Tooltip] Error setting up tooltip:`, error);
     }
@@ -3526,12 +3583,16 @@ export class Visual implements IVisual {
         .then(() => {
           this.currentSelection = [];
           this.persistentSelection = [];
+          this.selectedGaulCodes.clear();
           this.showOnlyCurrentContextMarkers();
+          this.updateChoroplethHighlighting();
         })
         .catch((error) => {
           this.currentSelection = [];
           this.persistentSelection = [];
+          this.selectedGaulCodes.clear();
           this.showOnlyCurrentContextMarkers();
+          this.updateChoroplethHighlighting();
         });
     } catch (error) {
       // Error in clearSelection
