@@ -14,6 +14,12 @@ import ISelectionManager = powerbiVisualsApi.extensibility.ISelectionManager;
 import ISelectionId = powerbiVisualsApi.visuals.ISelectionId;
 import customGeoJSON from "./custom.geo.json";
 import { VisualFormattingSettingsModel } from "./settings";
+import notListedPositiveSvg from "../assets/not_listed_positive.svg";
+import notListedNegativeSvg from "../assets/not_listed_negative.svg";
+import notListedNotAvailableSvg from "../assets/not_listed_not available.svg";
+import positiveSvg from "../assets/positive.svg";
+import negativeSvg from "../assets/negative.svg";
+import notAvailableSvg from "../assets/notavailable.svg";
 
 export class Visual implements IVisual {
   private target: HTMLElement;
@@ -33,16 +39,13 @@ export class Visual implements IVisual {
   private currentDataView: DataView;
   private settings: VisualFormattingSettingsModel;
   private geoJsonFeatures: any[] = []; // Store GeoJSON features for gaul_code lookup
-  private choroplethLayer: L.GeoJSON<any> | null = null; // Choropleth layer for highlighting matching regions
   private isLoading: boolean = false;
   private loadingOperations: Set<string> = new Set();
-  private cachedAdminCodes: string[] = []; // Cache admin codes to avoid repeated processing
   private mapLoaded: boolean = false; // Track if map is fully loaded
   private debugLocationLogCount: number = 0; // Limit noisy debug logs
   private debugLocationValueLogCount: number = 0; // Limit raw value logs
   private lastSelectedClusterMarkers: Set<L.Marker> = new Set(); // Track markers from last selected cluster
   private lastSelectedClusterSelectionIds: ISelectionId[] = []; // Track selection IDs from last selected cluster
-  private selectedGaulCodes: Set<string> = new Set(); // Track selected GAUL codes for choropleth highlighting
 
   constructor(options: VisualConstructorOptions) {
     this.target = options.element;
@@ -198,12 +201,6 @@ export class Visual implements IVisual {
         this.onEachDisputedBorderFeature(feature, layer),
     });
 
-    // Initialize choropleth layer for highlighting matching regions
-    this.choroplethLayer = L.geoJSON(null, {
-      style: this.getChoroplethStyle.bind(this),
-      onEachFeature: this.onEachChoroplethFeature.bind(this),
-    });
-
     // Initialize marker cluster group
     this.markerClusterGroup = L.markerClusterGroup({
       chunkedLoading: true,
@@ -215,6 +212,9 @@ export class Visual implements IVisual {
       removeOutsideVisibleBounds: true,
       animate: true,
       animateAddingMarkers: true,
+      iconCreateFunction: (cluster: any) => {
+        return this.createClusterIcon(cluster);
+      },
       spiderfyShapePositions: function (count: number, centerPoint: L.Point) {
         const positions = [];
         const angleStep = (2 * Math.PI) / count;
@@ -253,19 +253,35 @@ export class Visual implements IVisual {
         display: none !important;
       }
       
+      .tooltip-title {
+        font-weight: bold;
+        color: #2D2D2D;
+        font-family: Arial, sans-serif;
+        font-size: 14px;
+        margin-bottom: 8px;
+        line-height: 1.4;
+      }
+      
+      .tooltip-paragraph {
+        color: #2D2D2D;
+        font-family: Arial, sans-serif;
+        font-size: 12px;
+        line-height: 1.5;
+        word-wrap: break-word;
+      }
+      
       .tooltip-row {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 8px 0;
+        padding: 6px 0;
         font-family: Arial, sans-serif;
         font-size: 12px;
+        border-bottom: 1px solid #e0e0e0;
       }
-
-      .tooltip-divider {
-        height: 1px;
-        background-color: #22294B;
-        width: 100%;
+      
+      .tooltip-row:last-child {
+        border-bottom: none;
       }
       
       .field-name {
@@ -273,6 +289,7 @@ export class Visual implements IVisual {
         color: #2D2D2D;
         font-family: Arial, sans-serif;
         font-size: 12px;
+        margin-right: 10px;
       }
       
       .field-value {
@@ -281,6 +298,8 @@ export class Visual implements IVisual {
         text-align: right;
         font-family: Arial, sans-serif;
         font-size: 12px;
+        word-wrap: break-word;
+        max-width: 60%;
       }
       
       /* Scrollbar styling for tooltip */
@@ -332,66 +351,25 @@ export class Visual implements IVisual {
         background: transparent !important;
       }
       
-      /* Marker cluster styling */
-      .marker-cluster-small {
-        background-color: rgba(249, 177, 18, 0.6);
-        border: 2px solid #F9B112;
-      }
-      
-      .marker-cluster-small div {
-        background-color: #F9B112;
-        color: white;
-        font-weight: bold;
-        font-size: 11px;
-        border-radius: 50%;
-        width: 30px;
-        height: 30px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      }
-      
-      .marker-cluster-medium {
-        background-color: rgba(249, 177, 18, 0.7);
-        border: 2px solid #F9B112;
-      }
-      
-      .marker-cluster-medium div {
-        background-color: #F9B112;
-        color: white;
-        font-weight: bold;
-        font-size: 12px;
-        border-radius: 50%;
-        width: 40px;
-        height: 40px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      }
-      
+      /* Marker cluster styling - remove default yellow styling, use inline styles from iconCreateFunction */
+      .marker-cluster-small,
+      .marker-cluster-medium,
       .marker-cluster-large {
-        background-color: rgba(249, 177, 18, 0.8);
-        border: 2px solid #22294d;
+        background: transparent !important;
+        border: none !important;
       }
       
+      .marker-cluster-small div,
+      .marker-cluster-medium div,
       .marker-cluster-large div {
-        background-color: #F9B112;
-        color: white;
-        font-weight: bold;
-        font-size: 13px;
-        border-radius: 50%;
-        width: 50px;
-        height: 50px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
+        /* Styles are applied via inline styles in createClusterIcon */
       }
       
       .marker-cluster-small:hover,
       .marker-cluster-medium:hover,
       .marker-cluster-large:hover {
-        background-color: rgba(249, 177, 18, 0.8);
-        border-color: #455E6F;
+        background: transparent !important;
+        border: none !important;
       }
     `;
     document.head.appendChild(style);
@@ -445,325 +423,168 @@ export class Visual implements IVisual {
     return refIdList.includes(markerRefIdStr);
   }
 
-  // Helper: parse a single location field supporting JSON or delimited strings
-  private parseLocationField(value: any): {
-    latitude?: number;
-    longitude?: number;
-    adminCode?: string;
-    obsId?: string;
-    country?: string;
-    state?: string;
-    refId?: string;
-  } {
-    if (value === null || value === undefined) return {};
-    const raw = String(value).trim();
-    if (!raw || raw === "NA") return {};
+  // Get marker icon SVG based on REGULATORYSTATUSVALUE and PEMOVALUE
+  private getMarkerIcon(regulatoryStatus: string, pemoValue: string): string {
+    const regulatoryStatusUpper = regulatoryStatus.toUpperCase();
+    const pemoValueUpper = pemoValue.toUpperCase();
 
-    if (this.debugLocationLogCount < 20) {
-      try {
-      } catch {}
-    }
-
-    // Try JSON first
-    try {
-      const obj = JSON.parse(raw);
-      const lat = parseFloat(
-        String((obj as any).lat ?? (obj as any).latitude ?? (obj as any).y)
-      );
-      const lng = parseFloat(
-        String(
-          (obj as any).lng ??
-            (obj as any).long ??
-            (obj as any).longitude ??
-            (obj as any).x
-        )
-      );
-      const admin =
-        (obj as any).admin ??
-        (obj as any).adminCode ??
-        (obj as any).gaul_code ??
-        (obj as any).code;
-      const obsId =
-        (obj as any).obsId ?? (obj as any).obs_id ?? (obj as any).obs;
-      const country =
-        (obj as any).country ??
-        (obj as any).countryName ??
-        (obj as any).country_name;
-      const state =
-        (obj as any).state ?? (obj as any).stateName ?? (obj as any).state_name;
-
-      const result: any = {};
-      if (!isNaN(lat)) result.latitude = lat;
-      if (!isNaN(lng)) result.longitude = lng;
-      if (admin !== undefined && admin !== null && String(admin) !== "") {
-        result.adminCode = String(admin);
+    // Check if REGULATORYSTATUSVALUE is "Not listed"
+    if (regulatoryStatusUpper === "NOT LISTED") {
+      if (pemoValueUpper === "POSITIVE") {
+        return notListedPositiveSvg;
+      } else if (pemoValueUpper === "NEGATIVE") {
+        return notListedNegativeSvg;
+      } else if (pemoValueUpper === "NOT AVAILABLE") {
+        return notListedNotAvailableSvg;
       }
-      if (obsId !== undefined && obsId !== null && String(obsId) !== "") {
-        result.obsId = String(obsId);
-      }
-      if (country !== undefined && country !== null && String(country) !== "") {
-        result.country = String(country);
-      }
-      if (state !== undefined && state !== null && String(state) !== "") {
-        result.state = String(state);
-      }
-      if (this.debugLocationLogCount < 20) {
-        try {
-          this.debugLocationLogCount++;
-        } catch {}
-      }
-      return result;
-    } catch (_) {
-      // Not JSON, continue
-    }
-
-    // Support common delimiters: comma, pipe, semicolon, space
-    const parts = raw.split(/,/);
-    if (parts.length >= 2) {
-      let latStr: string | undefined;
-      let lngStr: string | undefined;
-      let admin: string | undefined;
-      let obsId: string | undefined;
-      let country: string | undefined;
-      let state: string | undefined;
-      let refId: string | undefined;
-
-      // Check if we have the pattern refId,lat,lng,admin,obsId,country,state (7+ parts with commas)
-      if (parts.length >= 7 && /,/.test(raw)) {
-        // Treat as: refId, lat, lng, admin, obsId, country, state
-        refId = parts[0] && parts[0].trim() !== "" ? parts[0] : undefined;
-        latStr = parts[1] && parts[1].trim() !== "" ? parts[1] : undefined;
-        lngStr = parts[2] && parts[2].trim() !== "" ? parts[2] : undefined;
-        admin = parts[3] && parts[3].trim() !== "" ? parts[3] : undefined;
-        obsId = parts[4] && parts[4].trim() !== "" ? parts[4] : undefined;
-        country = parts[5] && parts[5].trim() !== "" ? parts[5] : undefined;
-        // Always extract state if parts[6] exists, even if it's "-"
-        state = parts[6] !== undefined ? parts[6].trim() : undefined;
-
-        if (this.debugLocationLogCount < 20) {
-          try {
-            this.debugLocationLogCount++;
-          } catch {}
-        }
-      }
-      // Check if we have the pattern refId,lat,lng,admin,obsId,country (6+ parts with commas)
-      else if (parts.length >= 6 && /,/.test(raw)) {
-        // Treat as: refId, lat, lng, admin, obsId, country
-        refId = parts[0] && parts[0].trim() !== "" ? parts[0] : undefined;
-        latStr = parts[1] && parts[1].trim() !== "" ? parts[1] : undefined;
-        lngStr = parts[2] && parts[2].trim() !== "" ? parts[2] : undefined;
-        admin = parts[3] && parts[3].trim() !== "" ? parts[3] : undefined;
-        obsId = parts[4] && parts[4].trim() !== "" ? parts[4] : undefined;
-        country = parts[5] && parts[5].trim() !== "" ? parts[5] : undefined;
-
-        if (this.debugLocationLogCount < 20) {
-          try {
-            this.debugLocationLogCount++;
-          } catch {}
-        }
-      }
-      // Check if we have the pattern refId,lat,lng,admin (4+ parts with commas)
-      else if (parts.length >= 4 && /,/.test(raw)) {
-        // Treat as: refId, lat, lng, admin
-        refId = parts[0] && parts[0].trim() !== "" ? parts[0] : undefined;
-        latStr = parts[1] && parts[1].trim() !== "" ? parts[1] : undefined;
-        lngStr = parts[2] && parts[2].trim() !== "" ? parts[2] : undefined;
-        admin = parts[3] && parts[3].trim() !== "" ? parts[3] : undefined;
-
-        if (this.debugLocationLogCount < 20) {
-          try {
-            this.debugLocationLogCount++;
-          } catch {}
-        }
-      } else {
-        // Treat as: lat, lng, admin
-        latStr = parts[0] && parts[0].trim() !== "" ? parts[0] : undefined;
-        lngStr = parts[1] && parts[1].trim() !== "" ? parts[1] : undefined;
-        admin = parts[2] && parts[2].trim() !== "" ? parts[2] : undefined;
-      }
-
-      const lat = latStr ? parseFloat(latStr) : NaN;
-      const lng = lngStr ? parseFloat(lngStr) : NaN;
-      const result: any = {};
-      if (!isNaN(lat)) result.latitude = lat;
-      if (!isNaN(lng)) result.longitude = lng;
-      if (admin !== undefined && admin !== null && String(admin) !== "") {
-        result.adminCode = String(admin);
-      }
-      if (obsId !== undefined && obsId !== null && String(obsId) !== "") {
-        result.obsId = String(obsId);
-      }
-      if (country !== undefined && country !== null && String(country) !== "") {
-        result.country = String(country);
-      }
-      if (state !== undefined && state !== null) {
-        result.state = String(state);
-      }
-      // Add refId if it was extracted
-      if (
-        typeof refId !== "undefined" &&
-        refId !== null &&
-        String(refId) !== ""
-      ) {
-        result.refId = String(refId);
-      }
-      if (this.debugLocationLogCount < 20) {
-        try {
-          this.debugLocationLogCount++;
-        } catch {}
-      }
-      return result;
-    }
-
-    // Edge case: admin-only with delimiters (e.g., "472,,,235")
-    if (parts.length >= 4) {
-      const admin = parts[3] && parts[3].trim() !== "" ? parts[3] : undefined;
-      const obsId = parts[4] && parts[4].trim() !== "" ? parts[4] : undefined;
-      const country = parts[5] && parts[5].trim() !== "" ? parts[5] : undefined;
-      // Always extract state if parts[6] exists, even if it's "-"
-      const state = parts[6] !== undefined ? parts[6].trim() : undefined;
-
-      if (admin !== undefined && admin !== null && String(admin) !== "") {
-        const result: any = { adminCode: String(admin) };
-        if (obsId !== undefined && obsId !== null && String(obsId) !== "") {
-          result.obsId = String(obsId);
-        }
-        if (
-          country !== undefined &&
-          country !== null &&
-          String(country) !== ""
-        ) {
-          result.country = String(country);
-        }
-        if (
-          state !== undefined &&
-          state !== null &&
-          String(state) !== "" &&
-          String(state) !== "-"
-        ) {
-          result.state = String(state);
-        }
-        if (this.debugLocationLogCount < 20) {
-          try {
-            this.debugLocationLogCount++;
-          } catch {}
-        }
-        return result;
+    } else {
+      // For any other REGULATORYSTATUSVALUE
+      if (pemoValueUpper === "POSITIVE") {
+        return positiveSvg;
+      } else if (pemoValueUpper === "NEGATIVE") {
+        return negativeSvg;
+      } else if (pemoValueUpper === "NOT AVAILABLE") {
+        return notAvailableSvg;
       }
     }
 
-    // Try labeled patterns like "lat: .., lon: .., admin: .., obsId: .., country: .."
-    const labeledLatMatch = raw.match(
-      /(lat|latitude|y)\s*[:=]\s*(-?\d+(?:\.\d+)?)/i
-    );
-    const labeledLngMatch = raw.match(
-      /(lng|long|longitude|x)\s*[:=]\s*(-?\d+(?:\.\d+)?)/i
-    );
-    const labeledAdminMatch = raw.match(
-      /(admin|adminCode|gaul[_\s]*code|code)\s*[:=]\s*([^,;|\s]+)/i
-    );
-    const labeledObsIdMatch = raw.match(
-      /(obsId|obs_id|obs)\s*[:=]\s*([^,;|\s]+)/i
-    );
-    const labeledCountryMatch = raw.match(
-      /(country|countryName|country_name)\s*[:=]\s*([^,;|\s]+)/i
-    );
-    const labeledStateMatch = raw.match(
-      /(state|stateName|state_name)\s*[:=]\s*([^,;|\s]+)/i
-    );
-
-    if (labeledLatMatch || labeledLngMatch) {
-      const result: any = {};
-      if (labeledLatMatch) {
-        const lat = parseFloat(labeledLatMatch[2]);
-        if (!isNaN(lat)) result.latitude = lat;
-      }
-      if (labeledLngMatch) {
-        const lng = parseFloat(labeledLngMatch[2]);
-        if (!isNaN(lng)) result.longitude = lng;
-      }
-      if (labeledAdminMatch) {
-        const admin = labeledAdminMatch[2];
-        if (admin !== undefined && admin !== null && String(admin) !== "") {
-          result.adminCode = String(admin);
-        }
-      }
-      if (labeledObsIdMatch) {
-        const obsId = labeledObsIdMatch[2];
-        if (obsId !== undefined && obsId !== null && String(obsId) !== "") {
-          result.obsId = String(obsId);
-        }
-      }
-      if (labeledCountryMatch) {
-        const country = labeledCountryMatch[2];
-        if (
-          country !== undefined &&
-          country !== null &&
-          String(country) !== ""
-        ) {
-          result.country = String(country);
-        }
-      }
-      if (labeledStateMatch) {
-        const state = labeledStateMatch[2];
-        if (state !== undefined && state !== null && String(state) !== "") {
-          result.state = String(state);
-        }
-      }
-      if (this.debugLocationLogCount < 20) {
-        try {
-          this.debugLocationLogCount++;
-        } catch {}
-      }
-      return result;
-    }
-
-    // As a last resort, extract first two numbers in the string as lat/lng
-    // BUT ONLY when there are no delimiters present, to avoid misreading admin-only strings
-    if (!/[|;,]/.test(raw)) {
-      const numberMatches = raw.match(/-?\d+(?:\.\d+)?/g);
-      if (numberMatches && numberMatches.length >= 2) {
-        const lat = parseFloat(numberMatches[0]);
-        const lng = parseFloat(numberMatches[1]);
-        const result: any = {};
-        if (!isNaN(lat) && lat >= -90 && lat <= 90) result.latitude = lat;
-        if (!isNaN(lng) && lng >= -180 && lng <= 180) result.longitude = lng;
-        if (this.debugLocationLogCount < 20) {
-          try {
-            this.debugLocationLogCount++;
-          } catch {}
-        }
-        return result;
-      }
-    }
-
-    // Fallback: single admin code
-    const fallback = { adminCode: raw } as any;
-    if (this.debugLocationLogCount < 20) {
-      try {
-        this.debugLocationLogCount++;
-      } catch {}
-    }
-    return fallback;
+    // Default fallback to positive icon if no match
+    return positiveSvg;
   }
 
-  // Helper: extract lat/lng/admin/obsId/country/state for a row, preferring explicit roles over combined location
-  private getLatLngAdminForRow(
+  // Get cluster colors based on REGULATORYSTATUSVALUE and PEMOVALUE
+  private getClusterColors(
+    regulatoryStatus: string,
+    pemoValue: string
+  ): {
+    backgroundColor: string;
+    centerColor: string;
+  } {
+    const regulatoryStatusUpper = regulatoryStatus.toUpperCase();
+    const pemoValueUpper = pemoValue.toUpperCase();
+
+    let backgroundColor = "#fff"; // Default white
+    let centerColor = "#768D48"; // Default positive green
+
+    // Check if REGULATORYSTATUSVALUE is "Not listed"
+    if (regulatoryStatusUpper === "NOT LISTED") {
+      backgroundColor = "#3C3D3C"; // Dark gray background
+
+      // Determine center color based on PEMOVALUE
+      if (pemoValueUpper === "POSITIVE") {
+        centerColor = "#768D48"; // Green
+      } else if (pemoValueUpper === "NEGATIVE") {
+        centerColor = "#E4B655"; // Yellow/gold
+      } else if (pemoValueUpper === "NOT AVAILABLE") {
+        centerColor = "#3C3D3C"; // Dark gray (same as background)
+      }
+    } else {
+      // For any other REGULATORYSTATUSVALUE
+      backgroundColor = "#fff"; // White background
+
+      // Determine center color based on PEMOVALUE
+      if (pemoValueUpper === "POSITIVE") {
+        centerColor = "#768D48"; // Green
+      } else if (pemoValueUpper === "NEGATIVE") {
+        centerColor = "#E4B655"; // Yellow/gold
+      } else if (pemoValueUpper === "NOT AVAILABLE") {
+        centerColor = "#fff"; // White (same as background)
+      }
+    }
+
+    return { backgroundColor, centerColor };
+  }
+
+  // Create cluster icon with custom colors
+  private createClusterIcon(cluster: any): L.DivIcon {
+    const count = cluster.getChildCount();
+    const markers = cluster.getAllChildMarkers();
+
+    // Get regulatory status and pemo value from first marker (or determine from all markers)
+    let regulatoryStatus = "";
+    let pemoValue = "";
+
+    if (markers.length > 0) {
+      const firstMarker = markers[0] as any;
+      regulatoryStatus = firstMarker.regulatoryStatus || "";
+      pemoValue = firstMarker.pemoValue || "";
+    }
+
+    // Get cluster colors based on the values
+    const colors = this.getClusterColors(regulatoryStatus, pemoValue);
+
+    // Determine cluster size class
+    let size = "small";
+    let sizePx = 30;
+    if (count > 100) {
+      size = "large";
+      sizePx = 50;
+    } else if (count > 10) {
+      size = "medium";
+      sizePx = 40;
+    }
+
+    // Create custom cluster icon with dynamic colors - only two circles
+    const className = `marker-cluster marker-cluster-${size}`;
+    const html = `
+      <div style="
+        background-color: ${colors.backgroundColor} !important;
+        border: none !important;
+        border-radius: 50%;
+        width: ${sizePx + 20}px;
+        height: ${sizePx + 20}px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 1;
+        box-shadow: none;
+        padding: 0;
+        margin: 0;
+      ">
+        <div style="
+          background-color: ${colors.centerColor} !important;
+          border: none !important;
+          border-radius: 50%;
+          width: ${sizePx}px;
+          height: ${sizePx}px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: ${
+            colors.centerColor === "#fff" || colors.centerColor === "#3C3D3C"
+              ? "#000"
+              : "#fff"
+          };
+          font-weight: bold;
+          font-size: ${
+            size === "large" ? "13px" : size === "medium" ? "12px" : "11px"
+          };
+          box-shadow: none;
+          padding: 0;
+          margin: 0;
+        ">
+          ${count}
+        </div>
+      </div>
+    `;
+
+    return L.divIcon({
+      html: html,
+      className: className,
+      iconSize: L.point(sizePx + 20, sizePx + 20),
+    });
+  }
+
+  // Helper: extract latitude and longitude for a row from separate fields
+  private getLatLngForRow(
     row: any[],
     columns: any[]
   ): {
     latitude?: number;
     longitude?: number;
-    adminCode?: string;
-    obsId?: string;
-    country?: string;
-    state?: string;
-    refId?: string;
   } {
     const latIdx = this.getColumnIndexByRole(columns, "latitude");
     const lngIdx = this.getColumnIndexByRole(columns, "longitude");
-    const adminIdx = this.getColumnIndexByRole(columns, "adminCode");
-    const locationIdx = this.getColumnIndexByRole(columns, "location");
 
     const result: any = {};
 
@@ -774,50 +595,6 @@ export class Visual implements IVisual {
     if (lngIdx >= 0 && row[lngIdx] !== undefined && row[lngIdx] !== null) {
       const lng = parseFloat(String(row[lngIdx]));
       if (!isNaN(lng)) result.longitude = lng;
-    }
-    if (
-      adminIdx >= 0 &&
-      row[adminIdx] !== undefined &&
-      row[adminIdx] !== null
-    ) {
-      const admin = String(row[adminIdx]);
-      if (admin && admin !== "undefined" && admin !== "null")
-        result.adminCode = admin;
-    }
-
-    if (
-      result.latitude === undefined ||
-      result.longitude === undefined ||
-      result.adminCode === undefined
-    ) {
-      if (locationIdx >= 0) {
-        if (this.debugLocationValueLogCount < 50) {
-          try {
-            const colName = columns[locationIdx]?.displayName || "location";
-            this.debugLocationValueLogCount++;
-          } catch {}
-        }
-        const parsed = this.parseLocationField(row[locationIdx]);
-        if (result.latitude === undefined && parsed.latitude !== undefined)
-          result.latitude = parsed.latitude;
-        if (result.longitude === undefined && parsed.longitude !== undefined)
-          result.longitude = parsed.longitude;
-        if (result.adminCode === undefined && parsed.adminCode !== undefined)
-          result.adminCode = parsed.adminCode;
-        if (result.obsId === undefined && parsed.obsId !== undefined)
-          result.obsId = parsed.obsId;
-        if (result.country === undefined && parsed.country !== undefined)
-          result.country = parsed.country;
-        if (result.state === undefined && parsed.state !== undefined)
-          result.state = parsed.state;
-        if (result.refId === undefined && parsed.refId !== undefined)
-          result.refId = parsed.refId;
-        if (this.debugLocationLogCount < 20) {
-          try {
-            this.debugLocationLogCount++;
-          } catch {}
-        }
-      }
     }
 
     return result;
@@ -838,7 +615,6 @@ export class Visual implements IVisual {
       const name = feature.properties.name || "Unknown Region";
 
       // Base map features are completely non-interactive - no hover effects, no click functionality
-      // This ensures only Power BI choropleth features are interactive
     }
   }
 
@@ -861,14 +637,15 @@ export class Visual implements IVisual {
       const childMarkers = cluster.getAllChildMarkers();
 
       if (childMarkers.length > 0) {
-        // Collect marker information first (this gets the correct data)
+        // Collect marker information first
         const clusterMarkerInfo = this.collectClusterMarkerInfo(childMarkers);
 
-        // Build tooltip using the collected info (ensures correct Obs IDs)
-        const countryData =
-          this.buildCountryDataFromMarkerInfo(clusterMarkerInfo);
-        const tooltipContent = this.buildClusterTooltipContent(countryData);
-        this.showTooltip(tooltipContent, e.latlng);
+        // Build tooltip using the collected tooltip data
+        const tooltipContent =
+          this.buildClusterTooltipFromMarkerInfo(clusterMarkerInfo);
+        if (tooltipContent) {
+          this.showTooltip(tooltipContent, e.latlng);
+        }
 
         // Store this cluster's markers for deselection logic
         this.lastSelectedClusterMarkers = new Set(childMarkers);
@@ -983,32 +760,23 @@ export class Visual implements IVisual {
     markerIndex: number;
     selectionId: ISelectionId;
     selectionKey: string;
-    lat?: number;
-    lng?: number;
-    obsId?: string;
-    country?: string;
-    state?: string;
-    adminCode?: string;
-    rowData?: any;
+    tooltipData?: any[];
+    tooltipColumnNames?: string[];
   }> {
     const clusterMarkerInfo: Array<{
       marker: L.Marker;
       markerIndex: number;
       selectionId: ISelectionId;
       selectionKey: string;
-      lat?: number;
-      lng?: number;
-      obsId?: string;
-      country?: string;
-      state?: string;
-      adminCode?: string;
-      rowData?: any;
+      tooltipData?: any[];
+      tooltipColumnNames?: string[];
     }> = [];
 
     markers.forEach((marker, clusterMarkerIdx) => {
       const markerIndex = this.markers.indexOf(marker);
       let selectionId = (marker as any).options?.selectionId;
-      const locationInfo = (marker as any).locationInfo;
+      const tooltipData = (marker as any).tooltipData;
+      const tooltipColumnNames = (marker as any).tooltipColumnNames;
 
       // If not found, find the marker index and use this.selectionIds for consistency
       if (
@@ -1024,43 +792,13 @@ export class Visual implements IVisual {
       if (selectionId) {
         const selectionKey = this.getSelectionIdKey(selectionId);
 
-        // Get row data if available
-        let rowData = null;
-        let obsId = locationInfo?.obsId;
-        let country = locationInfo?.country;
-        let state = locationInfo?.state;
-        let adminCode = locationInfo?.adminCode;
-        let lat = locationInfo?.latitude;
-        let lng = locationInfo?.longitude;
-
-        if (
-          this.currentDataView?.table?.rows &&
-          markerIndex >= 0 &&
-          markerIndex < this.currentDataView.table.rows.length
-        ) {
-          rowData = this.currentDataView.table.rows[markerIndex];
-          const columns = this.currentDataView.table.columns;
-          const info = this.getLatLngAdminForRow(rowData, columns);
-          obsId = obsId || info.obsId;
-          country = country || info.country;
-          state = state || info.state;
-          adminCode = adminCode || info.adminCode;
-          lat = lat || info.latitude;
-          lng = lng || info.longitude;
-        }
-
         clusterMarkerInfo.push({
           marker,
           markerIndex,
           selectionId,
           selectionKey,
-          lat,
-          lng,
-          obsId,
-          country,
-          state,
-          adminCode,
-          rowData,
+          tooltipData,
+          tooltipColumnNames,
         });
       }
     });
@@ -1068,65 +806,77 @@ export class Visual implements IVisual {
     return clusterMarkerInfo;
   }
 
-  // Build country data map from collected marker info (ensures correct Obs IDs)
-  private buildCountryDataFromMarkerInfo(
+  // Build cluster tooltip from collected marker tooltip data
+  private buildClusterTooltipFromMarkerInfo(
     markerInfo: Array<{
       marker: L.Marker;
       markerIndex: number;
       selectionId: ISelectionId;
       selectionKey: string;
-      lat?: number;
-      lng?: number;
-      obsId?: string;
-      country?: string;
-      state?: string;
-      adminCode?: string;
-      rowData?: any;
+      tooltipData?: any[];
+      tooltipColumnNames?: string[];
     }>
-  ): Map<string, { countryName: string; stateName: string; obsIds: string[] }> {
-    const countryStateMap = new Map<
-      string,
-      { countryName: string; stateName: string; obsIds: string[] }
-    >();
+  ): string {
+    if (markerInfo.length === 0) {
+      return "";
+    }
 
+    // Collect all tooltip data and column names from markers
+    const allTooltipData: any[][] = [];
+    let columnNames: string[] | undefined = undefined;
     markerInfo.forEach((info) => {
-      let country = info.country;
-      const state = info.state || "-";
-      const obsId = info.obsId;
-      const adminCode = info.adminCode;
-
-      // Get country from adminCode if country not available
-      if (!country && adminCode) {
-        country =
-          this.getCountryNameFromAdminCode(String(adminCode)) || undefined;
-      }
-
-      // Skip markers without country information
-      if (!country) {
-        return;
-      }
-
-      // Use country + state as the grouping key
-      const groupKey = `${country}|||${state}`;
-
-      if (countryStateMap.has(groupKey)) {
-        // Add the ObsID if available (only if not already present to avoid duplicates)
-        if (
-          obsId &&
-          !countryStateMap.get(groupKey)!.obsIds.includes(String(obsId))
-        ) {
-          countryStateMap.get(groupKey)!.obsIds.push(String(obsId));
+      if (info.tooltipData && info.tooltipData.length > 0) {
+        allTooltipData.push(info.tooltipData);
+        // Use column names from first marker that has them
+        if (!columnNames && info.tooltipColumnNames) {
+          columnNames = info.tooltipColumnNames;
         }
-      } else {
-        countryStateMap.set(groupKey, {
-          countryName: country,
-          stateName: state,
-          obsIds: obsId ? [String(obsId)] : [],
-        });
       }
     });
 
-    return countryStateMap;
+    if (allTooltipData.length === 0) {
+      return "";
+    }
+
+    // If only one marker, use its tooltip directly
+    if (allTooltipData.length === 1) {
+      return this.buildTooltipContent(allTooltipData[0], columnNames);
+    }
+
+    // For multiple markers, show all fields from all markers
+    // Group by field name and show all values
+    const fieldMap = new Map<string, Set<string>>();
+
+    allTooltipData.forEach((tooltipData) => {
+      for (let i = 0; i < tooltipData.length; i++) {
+        if (tooltipData[i] !== undefined && tooltipData[i] !== null) {
+          const value = String(tooltipData[i]).trim();
+          if (value) {
+            const fieldName =
+              columnNames && columnNames[i] ? columnNames[i] : `Field ${i + 1}`;
+            if (!fieldMap.has(fieldName)) {
+              fieldMap.set(fieldName, new Set());
+            }
+            fieldMap.get(fieldName)!.add(value);
+          }
+        }
+      }
+    });
+
+    // Build tooltip showing field name: values
+    let html = "";
+    fieldMap.forEach((values, fieldName) => {
+      const uniqueValues = Array.from(values);
+      const valueText =
+        uniqueValues.length === 1 ? uniqueValues[0] : uniqueValues.join(", ");
+      html += `<div class="tooltip-row"><span class="field-name">${this.escapeHtml(
+        fieldName
+      )}</span><span class="field-value">${this.escapeHtml(
+        valueText
+      )}</span></div>`;
+    });
+
+    return html || "";
   }
 
   // Apply filtering based on markers in the cluster (using pre-collected info)
@@ -1137,12 +887,7 @@ export class Visual implements IVisual {
       markerIndex: number;
       selectionId: ISelectionId;
       selectionKey: string;
-      lat?: number;
-      lng?: number;
-      obsId?: string;
-      country?: string;
-      adminCode?: string;
-      rowData?: any;
+      tooltipData?: any[];
     }>
   ) {
     // Extract selection IDs from the pre-collected marker info
@@ -1189,16 +934,10 @@ export class Visual implements IVisual {
               ...clusterSelectionIds,
             ] as ISelectionId[];
 
-            // Update selected GAUL codes from cluster selection
-            this.updateSelectedGaulCodesFromSelection();
-
             // Update marker visibility immediately so UI reflects selection
             this.updateMarkersVisibility(
               this.currentSelection as ISelectionId[]
             );
-
-            // Update choropleth highlighting
-            this.updateChoroplethHighlighting();
 
             // Multi-select approach based on Stack Overflow solution:
             // https://stackoverflow.com/questions/37388223/how-to-multiselect-with-selection-manager-in-power-bi-custom-visual
@@ -1224,39 +963,30 @@ export class Visual implements IVisual {
 
               selectionChain
                 .then(() => {
-                  // Update selected GAUL codes after cluster selection completes
-                  this.updateSelectedGaulCodesFromSelection();
                   // Update visibility after all selections complete (Power BI may have filtered data)
                   this.updateMarkersVisibility(
                     this.currentSelection as ISelectionId[]
                   );
-                  this.updateChoroplethHighlighting();
                 })
                 .catch(() => {
                   // Even if selection fails, update visibility
-                  this.updateSelectedGaulCodesFromSelection();
                   this.updateMarkersVisibility(
                     this.currentSelection as ISelectionId[]
                   );
-                  this.updateChoroplethHighlighting();
                 });
             } else if (clusterSelectionIds.length === 1) {
               // Single selection
               this.selectionManager
                 .select(clusterSelectionIds[0])
                 .then(() => {
-                  this.updateSelectedGaulCodesFromSelection();
                   this.updateMarkersVisibility(
                     this.currentSelection as ISelectionId[]
                   );
-                  this.updateChoroplethHighlighting();
                 })
                 .catch(() => {
-                  this.updateSelectedGaulCodesFromSelection();
                   this.updateMarkersVisibility(
                     this.currentSelection as ISelectionId[]
                   );
-                  this.updateChoroplethHighlighting();
                 });
             }
           })
@@ -1268,101 +998,6 @@ export class Visual implements IVisual {
   }
 
   // Select all rows matching a GAUL admin code and apply Power BI filtering
-  private selectByAdminGaulCode(gaulCode: any) {
-    if (!this.currentDataView?.table?.rows || !this.selectionIds) {
-      return;
-    }
-
-    const columns = this.currentDataView.table.columns;
-    const rows = this.currentDataView.table.rows;
-
-    // Collect selection IDs whose adminCode matches the clicked GAUL code
-    const matchingSelectionIds: ISelectionId[] = [];
-    rows.forEach((row, idx) => {
-      const info = this.getLatLngAdminForRow(row, columns);
-      if (
-        info.adminCode !== undefined &&
-        String(info.adminCode) === String(gaulCode) &&
-        this.selectionIds[idx]
-      ) {
-        matchingSelectionIds.push(this.selectionIds[idx]);
-      }
-    });
-
-    if (matchingSelectionIds.length === 0) {
-      return;
-    }
-
-    // Toggle behavior: if all matching are already selected, clear selection
-    const matchingKeys = new Set(
-      matchingSelectionIds.map((id) => this.getSelectionIdKey(id))
-    );
-    const currentKeys = new Set(
-      (this.currentSelection || []).map((id) => this.getSelectionIdKey(id))
-    );
-
-    const allAlreadySelected =
-      matchingKeys.size > 0 &&
-      Array.from(matchingKeys).every((k) => currentKeys.has(k)) &&
-      matchingKeys.size === currentKeys.size; // exact same set
-
-    if (allAlreadySelected) {
-      this.selectionManager
-        .clear()
-        .then(() => {
-          this.clearSelectionAndCluster();
-        })
-        .catch(() => {
-          this.clearSelectionAndCluster();
-        });
-      return;
-    }
-
-    // Track selected GAUL code for choropleth highlighting
-    const gaulCodeStr = String(gaulCode);
-    this.selectedGaulCodes.clear();
-    this.selectedGaulCodes.add(gaulCodeStr);
-
-    // Apply selection to Power BI (multi-select chain)
-    this.selectionManager
-      .clear()
-      .then(() => {
-        this.currentSelection = [...matchingSelectionIds];
-        this.persistentSelection = [...matchingSelectionIds];
-
-        // Update marker visibility immediately
-        this.updateMarkersVisibility(this.currentSelection as ISelectionId[]);
-
-        // Update choropleth highlighting
-        this.updateChoroplethHighlighting();
-
-        // Select first, then chain remaining with multi-select
-        let chain = this.selectionManager.select(matchingSelectionIds[0]);
-        for (let i = 1; i < matchingSelectionIds.length; i++) {
-          chain = chain.then(() =>
-            this.selectionManager.select(matchingSelectionIds[i], true)
-          );
-        }
-
-        chain
-          .then(() => {
-            this.updateMarkersVisibility(
-              this.currentSelection as ISelectionId[]
-            );
-            this.updateChoroplethHighlighting();
-          })
-          .catch(() => {
-            this.updateMarkersVisibility(
-              this.currentSelection as ISelectionId[]
-            );
-            this.updateChoroplethHighlighting();
-          });
-      })
-      .catch(() => {
-        this.updateMarkersVisibility(this.currentSelection as ISelectionId[]);
-        this.updateChoroplethHighlighting();
-      });
-  }
 
   // Get country name from admin code using GeoJSON features
   private getCountryNameFromAdminCode(adminCode: string): string | null {
@@ -1387,67 +1022,7 @@ export class Visual implements IVisual {
     return null;
   }
 
-  // Build cluster tooltip content using same format as choropleth tooltips
-  private buildClusterTooltipContent(
-    countryStateData: Map<
-      string,
-      { countryName: string; stateName: string; obsIds: string[] }
-    >
-  ): string {
-    if (countryStateData.size === 0) {
-      return '<div class="tooltip-row"><span class="field-name">No data available</span></div>';
-    }
-
-    // Get all obsIds from all groups to determine total count
-    const allObsIds: string[] = [];
-    countryStateData.forEach((data) => {
-      allObsIds.push(...data.obsIds);
-    });
-    const uniqueAllObsIds = Array.from(new Set(allObsIds));
-
-    // If only one observation exists across all groups, show same format as markers
-    if (uniqueAllObsIds.length === 1 && countryStateData.size === 1) {
-      const firstGroup = Array.from(countryStateData.values())[0];
-      const locationInfo: any = {
-        obsId: firstGroup.obsIds[0],
-        country: firstGroup.countryName,
-        state: firstGroup.stateName,
-      };
-      return this.buildCategoricalTooltipContent(locationInfo, undefined);
-    }
-
-    // If multiple observations exist, group by Country and State
-    const tooltipParts: string[] = [];
-
-    // Show each Country+State group
-    countryStateData.forEach((group) => {
-      // Add Country
-      tooltipParts.push(
-        `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${group.countryName}</span></div>`
-      );
-
-      // Add State
-      tooltipParts.push(
-        `<div class="tooltip-row"><span class="field-name">State</span><span class="field-value">${group.stateName}</span></div>`
-      );
-
-      // Add ObsID or Obs Count
-      const uniqueObsIds = Array.from(new Set(group.obsIds));
-      if (uniqueObsIds.length === 1) {
-        // Show actual ObsID when count is 1
-        tooltipParts.push(
-          `<div class="tooltip-row"><span class="field-name">Obs ID</span><span class="field-value">${uniqueObsIds[0]}</span></div>`
-        );
-      } else {
-        // Show count when more than 1
-        tooltipParts.push(
-          `<div class="tooltip-row"><span class="field-name">Obs Count</span><span class="field-value">${uniqueObsIds.length}</span></div>`
-        );
-      }
-    });
-
-    return this.buildTooltipWithOddDividers(tooltipParts);
-  }
+  // Build cluster tooltip content
 
   // Override zoom controls to respect our desired zoom level
   private setupZoomControls() {
@@ -1603,9 +1178,6 @@ export class Visual implements IVisual {
       setTimeout(() => {
         this.handleDisputedBordersUrlChange();
       }, 100);
-
-      // Force choropleth layer update when both GeoJSON and data are ready
-      this.forceChoroplethUpdate();
 
       this.hideLoader("baseMap");
     } catch (error) {
@@ -1801,448 +1373,6 @@ export class Visual implements IVisual {
     return false;
   }
 
-  // Choropleth styling method
-  private getChoroplethStyle(feature: any): L.PathOptions {
-    const gaulCode = feature.properties?.gaul_code;
-    const gaulCodeStr = gaulCode ? String(gaulCode) : null;
-    const hasSelection = this.selectedGaulCodes.size > 0;
-    const isSelected = gaulCodeStr && this.selectedGaulCodes.has(gaulCodeStr);
-
-    // Default: all choropleths at full opacity
-    // When selection exists: selected stays at 1.0, others reduce to 0.3
-    if (!hasSelection || isSelected) {
-      return {
-        fillColor: "#455E6F", // Keep original blue-gray color
-        weight: 1,
-        opacity: 1,
-        fillOpacity: 1,
-        color: "black", // Black border for all choropleth features
-      };
-    }
-
-    // Reduced opacity for non-selected choropleth features (only when selection exists)
-    return {
-      fillColor: "#455E6F", // Same blue-gray color
-      weight: 1,
-      opacity: 0.3,
-      fillOpacity: 0.3,
-      color: "black", // Black border
-    };
-  }
-
-  // Choropleth feature handler
-  private onEachChoroplethFeature(feature: any, layer: L.Layer): void {
-    // Use cached admin codes instead of calling getAdminCodesFromData repeatedly
-    const adminCodes = this.cachedAdminCodes;
-    const gaulCode = feature.properties?.gaul_code;
-    const gaulCodeStr = String(gaulCode);
-    const isMatch = adminCodes.includes(gaulCodeStr);
-
-    if (isMatch) {
-      // Get choropleth tooltip data for this region
-      const choroplethTooltipData =
-        this.getChoroplethTooltipDataForRegion(gaulCode);
-      const regionName =
-        feature.properties?.gaul0_name ||
-        feature.properties?.disp_en ||
-        "Unknown Region";
-
-      layer.on("click", (e) => {
-        try {
-          // Show tooltip on click with choropleth data using same format as markers
-          const tooltipContent = this.buildChoroplethTooltipContent(gaulCode);
-
-          if (tooltipContent) {
-            this.showTooltip(tooltipContent, e.latlng);
-          } else {
-            console.warn(
-              `[Choropleth Click] Tooltip content is empty/null, not showing tooltip`
-            );
-          }
-
-          // Apply selection to filter other visuals based on GAUL code
-          this.selectByAdminGaulCode(gaulCode);
-        } catch (error) {
-          console.error(
-            `[Choropleth Click] Error building/showing tooltip:`,
-            error
-          );
-        }
-
-        // Stop event propagation to prevent map click
-        L.DomEvent.stopPropagation(e);
-      });
-    } else {
-    }
-  }
-
-  // Get all Admin Codes from current data (with caching)
-  private getAdminCodesFromData(): string[] {
-    // Return cached admin codes if available
-    if (this.cachedAdminCodes.length > 0) {
-      return this.cachedAdminCodes;
-    }
-
-    const adminCodes: string[] = [];
-
-    // Handle table data (primary format)
-    if (
-      this.currentDataView?.table?.columns &&
-      this.currentDataView?.table?.rows
-    ) {
-      const columns = this.currentDataView.table.columns;
-      const tableAdminCodes = this.currentDataView.table.rows
-        .map((row) => {
-          const info = this.getLatLngAdminForRow(row, columns);
-          return info.adminCode ? String(info.adminCode) : null;
-        })
-        .filter((code) => code !== null && code !== undefined) as string[];
-
-      // Remove duplicates and add to adminCodes
-      const uniqueAdminCodes = Array.from(new Set(tableAdminCodes));
-      adminCodes.push(...uniqueAdminCodes);
-    }
-    // Handle categorical data (fallback)
-    else if (this.currentDataView?.categorical?.categories) {
-      const locationCategory = this.currentDataView.categorical.categories[0];
-      if (locationCategory && locationCategory.values) {
-        const categoricalAdminCodes = locationCategory.values
-          .map((locationValue: any) => {
-            const locationInfo = this.parseLocationField(locationValue);
-            return locationInfo.adminCode
-              ? String(locationInfo.adminCode)
-              : null;
-          })
-          .filter((code) => code !== null && code !== undefined) as string[];
-
-        // Remove duplicates and add to adminCodes
-        const uniqueCategoricalCodes = Array.from(
-          new Set(categoricalAdminCodes)
-        );
-        adminCodes.push(...uniqueCategoricalCodes);
-      }
-    }
-
-    // Cache the admin codes
-    this.cachedAdminCodes = adminCodes;
-    return adminCodes;
-  }
-
-  // Get choropleth tooltip data for a specific region (GAUL code)
-  private getChoroplethTooltipDataForRegion(gaulCode: any): string | null {
-    if (
-      !this.currentDataView?.table?.columns ||
-      !this.currentDataView?.table?.rows
-    ) {
-      return null;
-    }
-
-    const columns = this.currentDataView.table.columns;
-    const choroplethTooltipColIndex = columns.findIndex(
-      (col) => col.roles?.choroplethTooltip
-    );
-
-    if (choroplethTooltipColIndex === -1) {
-      return null;
-    }
-
-    // Find the first row that matches this GAUL code
-    const matchingRow = this.currentDataView.table.rows.find((row) => {
-      const info = this.getLatLngAdminForRow(row, columns);
-      return (
-        info.adminCode !== undefined &&
-        String(info.adminCode) === String(gaulCode)
-      );
-    });
-
-    if (matchingRow) {
-      const choroplethTooltipValue = matchingRow[choroplethTooltipColIndex];
-      return choroplethTooltipValue ? String(choroplethTooltipValue) : null;
-    }
-
-    return null;
-  }
-
-  // Build choropleth tooltip content using same format as markers/cluster tooltips
-  private buildChoroplethTooltipContent(gaulCode: any): string {
-    // Handle table data (primary format)
-    if (
-      this.currentDataView?.table?.columns &&
-      this.currentDataView?.table?.rows
-    ) {
-      const columns = this.currentDataView.table.columns;
-      const totalRows = this.currentDataView.table.rows.length;
-
-      // Find ALL rows that match this GAUL code
-      const matchingRows = this.currentDataView.table.rows.filter((row) => {
-        const info = this.getLatLngAdminForRow(row, columns);
-        const matches =
-          info.adminCode !== undefined &&
-          String(info.adminCode) === String(gaulCode);
-        return matches;
-      });
-
-      if (matchingRows.length === 0) {
-        return `Matched Region (Code: ${gaulCode})`;
-      }
-
-      // If only one observation exists, show same format as markers
-      if (matchingRows.length === 1) {
-        const rowInfo = this.getLatLngAdminForRow(matchingRows[0], columns);
-
-        const tooltipContent = this.buildCategoricalTooltipContent(
-          rowInfo,
-          rowInfo.refId
-        );
-
-        return tooltipContent;
-      }
-
-      // If multiple observations exist, group by Country and State
-
-      const countryStateMap = new Map<
-        string,
-        { countryName: string; stateName: string; obsIds: string[] }
-      >();
-
-      matchingRows.forEach((row, rowIndex) => {
-        const info = this.getLatLngAdminForRow(row, columns);
-        const country =
-          info.country ||
-          this.getCountryNameFromAdminCode(String(gaulCode)) ||
-          `Country ${gaulCode}`;
-        const state = info.state || "-";
-        const obsId = info.obsId;
-
-        // Create a unique key for country+state combination
-        const groupKey = `${country}|||${state}`;
-
-        if (!countryStateMap.has(groupKey)) {
-          countryStateMap.set(groupKey, {
-            countryName: country,
-            stateName: state,
-            obsIds: [],
-          });
-        }
-
-        if (obsId !== undefined && obsId !== null && String(obsId) !== "") {
-          const group = countryStateMap.get(groupKey)!;
-          if (!group.obsIds.includes(String(obsId))) {
-            group.obsIds.push(String(obsId));
-          }
-        }
-      });
-
-      if (countryStateMap.size === 0) {
-        return `Matched Region (Code: ${gaulCode})`;
-      }
-
-      const tooltipParts: string[] = [];
-
-      // Show each Country+State group
-      countryStateMap.forEach((group) => {
-        // Add Country
-        tooltipParts.push(
-          `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${group.countryName}</span></div>`
-        );
-
-        // Add State
-        tooltipParts.push(
-          `<div class="tooltip-row"><span class="field-name">State</span><span class="field-value">${group.stateName}</span></div>`
-        );
-
-        // Add ObsID or Obs Count
-        const uniqueObsIds = Array.from(new Set(group.obsIds));
-        if (uniqueObsIds.length === 1) {
-          // Show actual ObsID when count is 1
-          tooltipParts.push(
-            `<div class="tooltip-row"><span class="field-name">Obs ID</span><span class="field-value">${uniqueObsIds[0]}</span></div>`
-          );
-        } else {
-          // Show count when more than 1
-          tooltipParts.push(
-            `<div class="tooltip-row"><span class="field-name">Obs Count</span><span class="field-value">${uniqueObsIds.length}</span></div>`
-          );
-        }
-      });
-
-      const finalContent = this.buildTooltipWithOddDividers(tooltipParts);
-
-      return finalContent;
-    }
-
-    console.warn(
-      `[Build Choropleth Tooltip] No table data available - currentDataView?.table?.columns: ${!!this
-        .currentDataView?.table
-        ?.columns}, currentDataView?.table?.rows: ${!!this.currentDataView
-        ?.table?.rows}`
-    );
-    return `Matched Region (Code: ${gaulCode})`;
-  }
-
-  // Update choropleth layer with current data
-  private updateChoroplethLayer(): void {
-    if (!this.choroplethLayer) {
-      return;
-    }
-
-    if (this.geoJsonFeatures.length === 0) {
-      return;
-    }
-
-    // Check if we have data to process
-    if (
-      !this.currentDataView?.table?.rows ||
-      this.currentDataView.table.rows.length === 0
-    ) {
-      return;
-    }
-
-    // Show loader for choropleth processing
-    this.showLoader("choropleth");
-
-    // Clear existing choropleth data
-    this.choroplethLayer.clearLayers();
-
-    // Get Admin Codes from current data (with caching)
-    const adminCodes = this.getAdminCodesFromData();
-
-    // Find matching features and create choropleth polygons
-    // Match only on gaul_code (not gaul0_code)
-    const matchingFeatures = this.geoJsonFeatures.filter((feature) => {
-      const gaulCode = feature.properties?.gaul_code;
-      if (!gaulCode) {
-        return false;
-      }
-      const gaulCodeStr = String(gaulCode);
-      const isMatch = adminCodes.includes(gaulCodeStr);
-      return isMatch;
-    });
-
-    // Only add choropleth layer to map if we have matching features
-    if (matchingFeatures.length > 0) {
-      this.choroplethLayer.addData({
-        type: "FeatureCollection",
-        features: matchingFeatures,
-      } as any);
-
-      // Add choropleth layer to map if not already added
-      if (!this.map.hasLayer(this.choroplethLayer)) {
-        this.choroplethLayer.addTo(this.map);
-      }
-    } else {
-      // Remove choropleth layer from map if no matches
-      if (this.map.hasLayer(this.choroplethLayer)) {
-        this.map.removeLayer(this.choroplethLayer);
-      }
-    }
-
-    // Hide loader after choropleth processing is complete
-    this.hideLoader("choropleth");
-
-    // Update highlighting after layer is updated
-    this.updateChoroplethHighlighting();
-  }
-
-  // Update selected GAUL codes from current marker selection
-  private updateSelectedGaulCodesFromSelection(): void {
-    this.selectedGaulCodes.clear();
-
-    if (!this.currentSelection || this.currentSelection.length === 0) {
-      return;
-    }
-
-    if (
-      !this.currentDataView?.table?.rows ||
-      !this.currentDataView?.table?.columns
-    ) {
-      return;
-    }
-
-    const columns = this.currentDataView.table.columns;
-    const rows = this.currentDataView.table.rows;
-
-    // Get GAUL codes from selected markers
-    this.currentSelection.forEach((selectionId) => {
-      // Find the row index for this selection ID
-      const rowIndex = this.selectionIds.findIndex((id) => {
-        if (!id || !selectionId) return false;
-        if (id.getKey && selectionId.getKey) {
-          return id.getKey() === selectionId.getKey();
-        }
-        if (id.toString && selectionId.toString) {
-          return id.toString() === selectionId.toString();
-        }
-        return id === selectionId;
-      });
-
-      if (rowIndex >= 0 && rowIndex < rows.length) {
-        const row = rows[rowIndex];
-        const info = this.getLatLngAdminForRow(row, columns);
-        if (info.adminCode !== undefined) {
-          this.selectedGaulCodes.add(String(info.adminCode));
-        }
-      }
-    });
-  }
-
-  // Update choropleth highlighting based on selected GAUL codes
-  private updateChoroplethHighlighting(): void {
-    if (!this.choroplethLayer) {
-      return;
-    }
-
-    // Iterate through all layers in the choropleth and update their styles
-    this.choroplethLayer.eachLayer((layer: any) => {
-      if (layer.feature) {
-        const feature = layer.feature;
-        const gaulCode = feature.properties?.gaul_code;
-        const gaulCodeStr = gaulCode ? String(gaulCode) : null;
-        const isSelected =
-          gaulCodeStr && this.selectedGaulCodes.has(gaulCodeStr);
-
-        // Apply appropriate style based on selection state
-        // Default: all choropleths at full opacity (when no selection)
-        // When selection exists: selected stays at 1.0, others reduce to 0.3
-        const hasSelection = this.selectedGaulCodes.size > 0;
-
-        const style =
-          !hasSelection || isSelected
-            ? {
-                fillColor: "#455E6F", // Keep original blue-gray color
-                weight: 1,
-                opacity: 1,
-                fillOpacity: 1,
-                color: "black", // Black border
-              }
-            : {
-                fillColor: "#455E6F", // Same blue-gray color
-                weight: 1,
-                opacity: 0.3,
-                fillOpacity: 0.3,
-                color: "black", // Black border
-              };
-
-        if (layer.setStyle) {
-          layer.setStyle(style);
-        }
-      }
-    });
-  }
-
-  // Force choropleth layer update when both GeoJSON and data are ready
-  private forceChoroplethUpdate(): void {
-    if (
-      this.mapLoaded &&
-      this.choroplethLayer &&
-      this.geoJsonFeatures.length > 0 &&
-      this.currentDataView?.table?.rows &&
-      this.currentDataView.table.rows.length > 0
-    ) {
-      this.updateChoroplethLayer();
-    }
-  }
-
   // Add a method to force URL reload (can be called externally if needed)
   public reloadBaseMap() {
     this.handleBaseMapUrlChange();
@@ -2291,7 +1421,6 @@ export class Visual implements IVisual {
       // Power BI Leaflet Visual - Data Import Guide:
       //   • For best results with complex geometries, use JSON import instead of CSV/Excel
       //   • Power BI has a 32,766 character limit for text fields
-      //   • Choropleth data loaded from Power BI geometryString
       //   • Simple display: Power BI geometry strings shown in red
 
       // Add comprehensive debugging for the update method
@@ -2355,17 +1484,11 @@ export class Visual implements IVisual {
       return;
     }
 
-    // Clear cached admin codes when processing new data
-    this.cachedAdminCodes = [];
-
     // Create selection IDs for markers FIRST
     this.createSelectionIds(dataView);
 
     // Process marker data from Power BI (lat/long) AFTER selection IDs are created
     this.processMarkerData(dataView);
-
-    // Force choropleth layer update when both GeoJSON and data are ready
-    this.forceChoroplethUpdate();
   }
 
   // Create selection IDs from categorical data
@@ -2410,10 +1533,11 @@ export class Visual implements IVisual {
     // Clear the cluster group
     this.markerClusterGroup.clearLayers();
 
-    // Process each location value
+    // Process each location value - categorical data processing removed, only table data supported
+    // This method is kept for compatibility but won't process data
     locationCategory.values.forEach((locationValue: any, index: number) => {
-      // Parse location field
-      const locationInfo = this.parseLocationField(locationValue);
+      // Categorical data processing removed - only table data with lat/lng fields is supported
+      const locationInfo: any = {};
 
       // Get refId from table data if available
       let refId = undefined;
@@ -2431,22 +1555,17 @@ export class Visual implements IVisual {
         const lat = locationInfo.latitude;
         const lng = locationInfo.longitude;
 
-        // Always use orange color for markers
-        const markerColor = "#F9B112";
+        // Categorical data processing - use default icon (this path is deprecated)
+        const svgIcon = positiveSvg; // Default fallback
 
-        // Create custom marker with dynamic color styling
+        // Create custom marker icon using the determined SVG
         const customMarkerIcon = L.divIcon({
           className: "custom-marker",
-          html: `
-              <svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12.5 0C5.596 0 0 5.596 0 12.5c0 9.375 12.5 28.5 12.5 28.5s12.5-19.125 12.5-28.5C25 5.596 19.404 0 12.5 0z" fill="${markerColor}"/>
-                <circle cx="12.5" cy="12.5" r="6" fill="white"/>
-              </svg>
-            `,
-          iconSize: [25, 41],
-          iconAnchor: [12, 41],
-          popupAnchor: [1, -34],
-          tooltipAnchor: [16, -28],
+          html: `<img src="${svgIcon}" style="width: 40px; height: 65px;" />`,
+          iconSize: [40, 65],
+          iconAnchor: [20, 65],
+          popupAnchor: [1, -54],
+          tooltipAnchor: [25, -45],
         });
 
         const marker = L.marker([lat, lng], {
@@ -2464,12 +1583,11 @@ export class Visual implements IVisual {
 
         // Add click handler for selection
         marker.on("click", (event) => {
-          // Build tooltip content
-          const tooltipContent = this.buildCategoricalTooltipContent(
-            locationInfo,
-            refId
-          );
-          this.showTooltip(tooltipContent, event.latlng);
+          // Build tooltip content (empty for categorical - not supported anymore)
+          const tooltipContent = this.buildTooltipContent([]);
+          if (tooltipContent) {
+            this.showTooltip(tooltipContent, event.latlng);
+          }
 
           // Handle selection if selection ID exists
           if (this.selectionIds && this.selectionIds[index]) {
@@ -2513,9 +1631,7 @@ export class Visual implements IVisual {
                 .then((ids: ISelectionId[]) => {
                   this.currentSelection = ids;
                   this.persistentSelection = [...ids];
-                  this.updateSelectedGaulCodesFromSelection();
                   this.updateMarkersVisibility(ids);
-                  this.updateChoroplethHighlighting();
                 })
                 .catch((error) => {
                   // Error selecting marker
@@ -2541,42 +1657,40 @@ export class Visual implements IVisual {
   }
 
   // Build tooltip content for categorical data
-  private buildCategoricalTooltipContent(
-    locationInfo: any,
-    refId: any
+  // Build tooltip content from tooltip field - show field name: value for each field
+  private buildTooltipContent(
+    tooltipData: any[],
+    columnNames?: string[]
   ): string {
-    const tooltipParts: string[] = [];
-
-    // Add Obs ID from location field if available
-    if (
-      locationInfo.obsId !== undefined &&
-      locationInfo.obsId !== null &&
-      locationInfo.obsId !== ""
-    ) {
-      tooltipParts.push(
-        `<div class="tooltip-row"><span class="field-name">Obs ID</span><span class="field-value">${locationInfo.obsId}</span></div>`
-      );
+    if (!tooltipData || tooltipData.length === 0) {
+      return "";
     }
 
-    // Add Country from location field if available
-    if (
-      locationInfo.country !== undefined &&
-      locationInfo.country !== null &&
-      locationInfo.country !== ""
-    ) {
-      tooltipParts.push(
-        `<div class="tooltip-row"><span class="field-name">Country</span><span class="field-value">${locationInfo.country}</span></div>`
-      );
+    // Build HTML structure showing field name: value for each field
+    let html = "";
+    for (let i = 0; i < tooltipData.length; i++) {
+      if (tooltipData[i] !== undefined && tooltipData[i] !== null) {
+        const value = String(tooltipData[i]).trim();
+        if (value) {
+          const fieldName =
+            columnNames && columnNames[i] ? columnNames[i] : `Field ${i + 1}`;
+          html += `<div class="tooltip-row"><span class="field-name">${this.escapeHtml(
+            fieldName
+          )}</span><span class="field-value">${this.escapeHtml(
+            value
+          )}</span></div>`;
+        }
+      }
     }
 
-    // Add State from location field if available (including "-")
-    if (locationInfo.state !== undefined && locationInfo.state !== null) {
-      tooltipParts.push(
-        `<div class="tooltip-row"><span class="field-name">State</span><span class="field-value">${locationInfo.state}</span></div>`
-      );
-    }
+    return html || "";
+  }
 
-    return this.buildTooltipWithOddDividers(tooltipParts);
+  // Helper to escape HTML for safe display
+  private escapeHtml(text: string): string {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
   }
 
   private processMarkerData(dataView: DataView) {
@@ -2584,44 +1698,67 @@ export class Visual implements IVisual {
       return;
     }
 
-    // Clear cached admin codes when processing new data
-    this.cachedAdminCodes = [];
-
     const columns = dataView.table.columns;
     const values = dataView.table.rows;
 
-    // Get Ref ID field for filtering (contains comma-separated list of visible Ref IDs)
-    const refIdColIndex = columns.findIndex((col) => col.roles?.refId);
-    let refIdFilterString = "";
-    if (refIdColIndex >= 0 && values.length > 0) {
-      refIdFilterString = String(values[0][refIdColIndex] || "");
-    }
+    // Get tooltip field indices and column names
+    const tooltipIndices: number[] = [];
+    const tooltipColumnNames: string[] = [];
+    columns.forEach((col, idx) => {
+      if (col.roles && (col.roles as any).tooltip) {
+        tooltipIndices.push(idx);
+        tooltipColumnNames.push(col.displayName || `Field ${idx}`);
+      }
+    });
 
-    // Build markers using either explicit lat/lng or the combined location field
-    const extracted = values.map((row) =>
-      this.getLatLngAdminForRow(row, columns)
-    );
+    // Get color field indices and find REGULATORYSTATUSVALUE and PEMOVALUE columns
+    const colorIndices: number[] = [];
+    let regulatoryStatusIndex = -1;
+    let pemoValueIndex = -1;
+    columns.forEach((col, idx) => {
+      if (col.roles && (col.roles as any).color) {
+        colorIndices.push(idx);
+        // Check column name to identify REGULATORYSTATUSVALUE and PEMOVALUE
+        const colName = (col.displayName || "").toUpperCase();
+        if (
+          colName.includes("REGULATORYSTATUS") ||
+          colName === "REGULATORYSTATUSVALUE"
+        ) {
+          regulatoryStatusIndex = idx;
+        }
+        if (colName.includes("PEMO") || colName === "PEMOVALUE") {
+          pemoValueIndex = idx;
+        }
+      }
+    });
+
+    // Build markers using latitude and longitude fields
+    const extracted = values.map((row) => this.getLatLngForRow(row, columns));
     const validCoordinateRows = values
-      .map((row, idx) => ({ row, idx, info: extracted[idx] }))
+      .map((row, idx) => ({
+        row,
+        idx,
+        coords: extracted[idx],
+        tooltipData: tooltipIndices.map((i) => row[i]),
+        tooltipColumnNames: tooltipColumnNames,
+        colorData: colorIndices.map((i) => row[i]),
+        regulatoryStatus:
+          regulatoryStatusIndex >= 0
+            ? String(row[regulatoryStatusIndex] || "").trim()
+            : "",
+        pemoValue:
+          pemoValueIndex >= 0 ? String(row[pemoValueIndex] || "").trim() : "",
+      }))
       .filter(
         (o) =>
-          o.info &&
-          o.info.latitude !== undefined &&
-          o.info.longitude !== undefined &&
-          !isNaN(o.info.latitude as number) &&
-          !isNaN(o.info.longitude as number)
+          o.coords &&
+          o.coords.latitude !== undefined &&
+          o.coords.longitude !== undefined &&
+          !isNaN(o.coords.latitude as number) &&
+          !isNaN(o.coords.longitude as number)
       );
 
     if (validCoordinateRows.length > 0) {
-      // Found latitude/longitude columns for markers
-      // Latitude column index: finalLatColIndex, name: columns[finalLatColIndex]?.displayName
-      // Longitude column index: finalLngColIndex, name: columns[finalLngColIndex]?.displayName
-
-      // Debug: Show actual values in the first few rows
-      // First 3 rows of lat/lng data
-
-      // validCoordinateRows already computed above using combined/existing fields
-
       // Clear existing markers
       this.markers.forEach((marker) => {
         this.markerClusterGroup.removeLayer(marker);
@@ -2633,25 +1770,20 @@ export class Visual implements IVisual {
 
       // Create markers only for rows with valid coordinates
       validCoordinateRows.forEach((o) => {
-        const lat = o.info.latitude as number;
-        const lng = o.info.longitude as number;
+        const lat = o.coords.latitude as number;
+        const lng = o.coords.longitude as number;
 
-        // Always use orange color for markers
-        const markerColor = "#F9B112";
+        // Determine which SVG icon to use based on REGULATORYSTATUSVALUE and PEMOVALUE
+        const svgIcon = this.getMarkerIcon(o.regulatoryStatus, o.pemoValue);
 
-        // Create custom marker with dynamic color styling
+        // Create custom marker icon using the determined SVG
         const customMarkerIcon = L.divIcon({
           className: "custom-marker",
-          html: `
-              <svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12.5 0C5.596 0 0 5.596 0 12.5c0 9.375 12.5 28.5 12.5 28.5s12.5-19.125 12.5-28.5C25 5.596 19.404 0 12.5 0z" fill="${markerColor}"/>
-                <circle cx="12.5" cy="12.5" r="6" fill="white"/>
-              </svg>
-            `,
-          iconSize: [25, 41],
-          iconAnchor: [12, 41],
-          popupAnchor: [1, -34],
-          tooltipAnchor: [16, -28],
+          html: `<img src="${svgIcon}" style="width: 40px; height: 65px;" />`,
+          iconSize: [40, 65],
+          iconAnchor: [20, 65],
+          popupAnchor: [1, -54],
+          tooltipAnchor: [25, -45],
         });
 
         const marker = L.marker([lat, lng], {
@@ -2665,44 +1797,38 @@ export class Visual implements IVisual {
             this.selectionIds[originalRowIndex];
         }
 
-        // Store location info and refId for tooltips and clustering
-        (marker as any).locationInfo = o.info;
+        // Store tooltip data and column names on marker
+        (marker as any).tooltipData = o.tooltipData;
+        (marker as any).tooltipColumnNames = o.tooltipColumnNames;
 
-        // Get refId from the location data (first part of the location string)
-        const locationRefId = o.info.refId;
-        (marker as any).refId = locationRefId;
+        // Store regulatory status and pemo value for cluster styling
+        (marker as any).regulatoryStatus = o.regulatoryStatus;
+        (marker as any).pemoValue = o.pemoValue;
 
-        // Apply opacity based on Ref ID filtering
-        const isRefIdInMeasure = this.isMarkerRefIdInMeasure(
-          locationRefId,
-          refIdFilterString
-        );
-
-        // Store the opacity state on the marker for later use
-        (marker as any).refIdFiltered = isRefIdInMeasure;
-
-        // Apply opacity immediately if element is available
+        // Apply opacity - show all markers at full opacity (no filtering)
         const markerElement = marker.getElement();
         if (markerElement) {
-          markerElement.style.opacity = isRefIdInMeasure ? "1" : "0.3";
+          markerElement.style.opacity = "1";
         } else {
           // If element not available yet, apply opacity after marker is added to map
           marker.on("add", () => {
             const element = marker.getElement();
             if (element) {
-              element.style.opacity = isRefIdInMeasure ? "1" : "0.3";
+              element.style.opacity = "1";
             }
           });
         }
 
         // Add click handler for selection
         marker.on("click", (event) => {
-          // Build tooltip content using stored locationInfo and refId
-          const tooltipContent = this.buildCategoricalTooltipContent(
-            o.info,
-            locationRefId
+          // Build tooltip content from tooltip field
+          const tooltipContent = this.buildTooltipContent(
+            o.tooltipData,
+            o.tooltipColumnNames
           );
-          this.showTooltip(tooltipContent, event.latlng);
+          if (tooltipContent) {
+            this.showTooltip(tooltipContent, event.latlng);
+          }
 
           // Handle selection if selection ID exists
           if (this.selectionIds && this.selectionIds[originalRowIndex]) {
@@ -2746,9 +1872,7 @@ export class Visual implements IVisual {
                 .then((ids: ISelectionId[]) => {
                   this.currentSelection = ids;
                   this.persistentSelection = [...ids];
-                  this.updateSelectedGaulCodesFromSelection();
                   this.updateMarkersVisibility(ids);
-                  this.updateChoroplethHighlighting();
                 })
                 .catch((error) => {
                   // Error selecting marker
@@ -2772,9 +1896,6 @@ export class Visual implements IVisual {
       if (hasBaseMapUrl && !this.map.hasLayer(this.markerClusterGroup)) {
         this.markerClusterGroup.addTo(this.map);
       }
-
-      // Force choropleth layer update when both GeoJSON and data are ready
-      this.forceChoroplethUpdate();
     } else {
       // No valid latitude/longitude columns found for markers
     }
@@ -2817,14 +1938,6 @@ export class Visual implements IVisual {
     this.currentSelection = [];
     this.persistentSelection = [];
     this.selectionIds = [];
-
-    // Clear choropleth layer
-    if (this.choroplethLayer) {
-      this.choroplethLayer.clearLayers();
-    }
-
-    // Clear cached admin codes
-    this.cachedAdminCodes = [];
 
     // Reset map loaded flag
     this.mapLoaded = false;
@@ -2892,13 +2005,10 @@ export class Visual implements IVisual {
           visibleMarkers++;
         }
 
-        // Apply opacity based on selection and Ref ID filtering
+        // Apply opacity based on selection
         const markerElement = marker.getElement();
 
         if (markerElement) {
-          // Get Ref ID filtering state
-          const isRefIdFiltered = (marker as any).refIdFiltered;
-
           if (selectedIds.length > 0) {
             // If there are selections, dim non-selected markers
             // Use the combined check (key-based or direct comparison)
@@ -2906,12 +2016,12 @@ export class Visual implements IVisual {
               // Selected marker: always use full opacity - use helper method
               this.setMarkerOpacityTo1(markerElement, index);
             } else {
-              // Non-selected marker: dim further
-              markerElement.style.opacity = isRefIdFiltered ? "0.5" : "0.15";
+              // Non-selected marker: dim to lower opacity
+              markerElement.style.opacity = "0.3";
             }
           } else {
-            // No selections, use Ref ID filtering opacity
-            markerElement.style.opacity = isRefIdFiltered ? "1" : "0.3";
+            // No selections: all markers should be at full opacity
+            markerElement.style.opacity = "1";
           }
         } else {
           // Marker element not available yet - likely still in a cluster
@@ -2947,8 +2057,12 @@ export class Visual implements IVisual {
                   if (isSelected) {
                     this.setMarkerOpacityTo1(element, index);
                   } else {
-                    const isRefIdFiltered = (marker as any).refIdFiltered;
-                    element.style.opacity = isRefIdFiltered ? "0.5" : "0.15";
+                    // Check if there are any selections
+                    if (selectedIds.length > 0) {
+                      element.style.opacity = "0.3";
+                    } else {
+                      element.style.opacity = "1";
+                    }
                   }
                 }
               }, 50);
@@ -3002,9 +2116,7 @@ export class Visual implements IVisual {
     this.persistentSelection = [];
     this.lastSelectedClusterMarkers.clear();
     this.lastSelectedClusterSelectionIds = [];
-    this.selectedGaulCodes.clear();
     this.updateMarkersVisibility([]);
-    this.updateChoroplethHighlighting();
   }
 
   // Helper method to hide markers using display: none
@@ -3583,16 +2695,12 @@ export class Visual implements IVisual {
         .then(() => {
           this.currentSelection = [];
           this.persistentSelection = [];
-          this.selectedGaulCodes.clear();
           this.showOnlyCurrentContextMarkers();
-          this.updateChoroplethHighlighting();
         })
         .catch((error) => {
           this.currentSelection = [];
           this.persistentSelection = [];
-          this.selectedGaulCodes.clear();
           this.showOnlyCurrentContextMarkers();
-          this.updateChoroplethHighlighting();
         });
     } catch (error) {
       // Error in clearSelection

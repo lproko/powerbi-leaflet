@@ -1,7 +1,7 @@
 {
   "visual": {
-    "name": "leafletMapVisual",
-    "displayName": "LeafletMapVisual",
+    "name": "leafletMapVisual_simple",
+    "displayName": "LeafletMapVisual_simple",
     "guid": "leafletMapVisual_choropleth",
     "visualClassName": "Visual",
     "version": "1.0.0.3",

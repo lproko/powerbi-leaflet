@@ -33,6 +33,10 @@ module.exports = {
           from: "plh-map.geojson",
           to: "plh-map.geojson",
         },
+        {
+          from: "assets",
+          to: "assets",
+        },
       ],
     }),
   ],

@@ -1,10 +1,28 @@
 {
   "dataRoles": [
     {
-      "name": "location",
+      "name": "latitude",
       "kind": "Grouping",
-      "displayName": "Data",
-      "description": "Single field containing Lat, Lng, Admin Code, Obs ID, Country"
+      "displayName": "Latitude",
+      "description": "Latitude coordinate"
+    },
+    {
+      "name": "longitude",
+      "kind": "Grouping",
+      "displayName": "Longitude",
+      "description": "Longitude coordinate"
+    },
+    {
+      "name": "tooltip",
+      "kind": "Grouping",
+      "displayName": "Tooltip",
+      "description": "Tooltip information - first column as title, rest as paragraph"
+    },
+    {
+      "name": "color",
+      "kind": "Grouping",
+      "displayName": "Color",
+      "description": "Color for markers and clusters"
     }
   ],
   "dataViewMappings": [
@@ -13,8 +31,23 @@
         "rows": {
           "select": [
             {
+              "bind": {
+                "to": "latitude"
+              }
+            },
+            {
+              "bind": {
+                "to": "longitude"
+              }
+            },
+            {
               "for": {
-                "in": "location"
+                "in": "tooltip"
+              }
+            },
+            {
+              "for": {
+                "in": "color"
               }
             }
           ]
