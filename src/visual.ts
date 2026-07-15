@@ -202,8 +202,8 @@ export class Visual implements IVisual {
     });
 
     // Initialize marker cluster group
-    this.markerClusterGroup = L.markerClusterGroup({
-      chunkedLoading: true,
+    this.markerClusterGroup = (L as any).markerClusterGroup({
+      chunkedLoading: false,
       maxClusterRadius: 40,
       spiderfyOnMaxZoom: true,
       showCoverageOnHover: true,
@@ -211,7 +211,7 @@ export class Visual implements IVisual {
       disableClusteringAtZoom: 18,
       removeOutsideVisibleBounds: true,
       animate: true,
-      animateAddingMarkers: true,
+      animateAddingMarkers: false,
       iconCreateFunction: (cluster: any) => {
         return this.createClusterIcon(cluster);
       },
@@ -497,21 +497,14 @@ export class Visual implements IVisual {
 
   // Create cluster icon with custom colors
   private createClusterIcon(cluster: any): L.DivIcon {
-    const count = cluster.getChildCount();
-    const markers = cluster.getAllChildMarkers();
+    const childCount = cluster.getChildCount();
 
-    // Get regulatory status and pemo value from first marker (or determine from all markers)
-    let regulatoryStatus = "";
-    let pemoValue = "";
-
-    if (markers.length > 0) {
-      const firstMarker = markers[0] as any;
-      regulatoryStatus = firstMarker.regulatoryStatus || "";
-      pemoValue = firstMarker.pemoValue || "";
+    if ((cluster as any).__cachedIconCount === childCount && (cluster as any).__cachedIcon) {
+      return (cluster as any).__cachedIcon;
     }
 
-    // Get cluster colors based on the values
-    const colors = this.getClusterColors(regulatoryStatus, pemoValue);
+    const count = childCount;
+    const colors = this.getClusterColors("", "");
 
     // Determine cluster size class
     let size = "small";
@@ -568,11 +561,14 @@ export class Visual implements IVisual {
       </div>
     `;
 
-    return L.divIcon({
+    const icon = L.divIcon({
       html: html,
       className: className,
       iconSize: L.point(sizePx + 20, sizePx + 20),
     });
+    (cluster as any).__cachedIconCount = childCount;
+    (cluster as any).__cachedIcon = icon;
+    return icon;
   }
 
   // Helper: extract latitude and longitude for a row from separate fields
@@ -1642,11 +1638,17 @@ export class Visual implements IVisual {
           L.DomEvent.stopPropagation(event);
         });
 
-        // Add marker to cluster group
-        this.markerClusterGroup.addLayer(marker);
         this.markers.push(marker);
       }
     });
+
+    const lats = this.markers.map(m => m.getLatLng().lat);
+    const lngs = this.markers.map(m => m.getLatLng().lng);
+    const zeroCoords = this.markers.filter(m => m.getLatLng().lat === 0 && m.getLatLng().lng === 0).length;
+    const dupMap = new Map<string, number>();
+    this.markers.forEach(m => { const k = `${m.getLatLng().lat},${m.getLatLng().lng}`; dupMap.set(k, (dupMap.get(k) || 0) + 1); });
+    const maxDup = Math.max(...dupMap.values());
+    console.log(`[PBILeaflet]   coords: lat[${Math.min(...lats).toFixed(2)}..${Math.max(...lats).toFixed(2)}] lng[${Math.min(...lngs).toFixed(2)}..${Math.max(...lngs).toFixed(2)}] zeros=${zeroCoords} maxDuplicates=${maxDup} uniqueLocations=${dupMap.size}`);
 
     // Only add cluster group to map if base map URL is provided
     const hasBaseMapUrl =
@@ -1885,10 +1887,10 @@ export class Visual implements IVisual {
           L.DomEvent.stopPropagation(event);
         });
 
-        // Add marker to cluster group instead of map
-        this.markerClusterGroup.addLayer(marker);
         this.markers.push(marker);
       });
+
+      console.log(`[PBILeaflet]   marker object creation done — ${this.markers.length} markers`);
 
       // Only add cluster group to map if base map URL is provided
       const hasBaseMapUrl =
@@ -1944,125 +1946,79 @@ export class Visual implements IVisual {
   }
 
   private updateMarkersVisibility(selectedIds: ISelectionId[]) {
+    const _t0 = performance.now();
+    console.log(`[PBILeaflet]   updateMarkersVisibility START — ${this.markers.length} markers`);
+
+    // Build O(1) lookup: selection key → row index
+    const selectedKeys = new Set(selectedIds.map((id) => this.getSelectionIdKey(id)));
+    const filteredRowCount = this.currentDataView?.table?.rows?.length ?? Infinity;
+    const selectionKeyToRowIndex = new Map<string, number>();
+    if (this.selectionIds) {
+      this.selectionIds.forEach((id, i) => {
+        if (id) selectionKeyToRowIndex.set(this.getSelectionIdKey(id), i);
+      });
+    }
+
+    const markersToAdd: L.Marker[] = [];
+    const markersToRemove: L.Marker[] = [];
     let visibleMarkers = 0;
     let hiddenMarkers = 0;
 
     this.markers.forEach((marker, index) => {
       let markerSelectionId = (marker as any).options?.selectionId;
 
-      // Fallback: get from this.selectionIds array if not stored on marker
       if (!markerSelectionId && this.selectionIds && this.selectionIds[index]) {
         markerSelectionId = this.selectionIds[index];
-        // Store it on the marker for future use
         (marker as any).options = (marker as any).options || {};
         (marker as any).options.selectionId = markerSelectionId;
       }
 
-      // Skip markers without selection IDs
-      if (!markerSelectionId) {
-        return;
-      }
+      if (!markerSelectionId) return;
 
-      // Check if this marker should be visible based on Power BI filtering
-      // A marker should be visible if:
-      // 1. It's in the current filtered data view (Power BI filtering), OR
-      // 2. It's explicitly selected by the user (cross-filtering)
-      const isInFilteredData = this.isMarkerInFilteredData(markerSelectionId);
-
-      // Use key-based comparison for reliable matching (same as cluster filtering)
       const markerKey = this.getSelectionIdKey(markerSelectionId);
-      const selectedKeys = new Set(
-        selectedIds.map((id) => this.getSelectionIdKey(id))
-      );
-      const isExplicitlySelected = selectedKeys.has(markerKey);
-
-      // Also check if this marker is in selectedIds by direct object comparison as fallback
-      const isDirectlySelected = selectedIds.some((selectedId) => {
-        if (!selectedId) return false;
-        // Try direct comparison first
-        if (selectedId === markerSelectionId) return true;
-        // Try key comparison (already done above, but checking again for debug)
-        return this.getSelectionIdKey(selectedId) === markerKey;
-      });
-
-      // Use whichever match works
-      const isSelected = isExplicitlySelected || isDirectlySelected;
-
-      // For manual selection: show all markers but dim non-selected ones
-      // For Power BI filtering: show markers that are in the filtered data OR are explicitly selected
-      // When markers are selected, we should show them even if Power BI filtered them out
-      const shouldBeVisible =
-        selectedIds.length > 0
-          ? isInFilteredData || isSelected
-          : isInFilteredData;
+      const rowIndex = selectionKeyToRowIndex.get(markerKey) ?? -1;
+      const isInFilteredData = rowIndex >= 0 && rowIndex < filteredRowCount;
+      const isSelected = selectedKeys.has(markerKey);
+      const shouldBeVisible = selectedIds.length > 0 ? isInFilteredData || isSelected : isInFilteredData;
+      const isInCluster = this.markerClusterGroup.hasLayer(marker);
 
       if (shouldBeVisible) {
-        // Show marker
-        if (!this.markerClusterGroup.hasLayer(marker)) {
-          this.markerClusterGroup.addLayer(marker);
-          visibleMarkers++;
-        } else {
-          visibleMarkers++;
-        }
+        if (!isInCluster) markersToAdd.push(marker);
+        visibleMarkers++;
 
-        // Apply opacity based on selection
         const markerElement = marker.getElement();
-
         if (markerElement) {
           if (selectedIds.length > 0) {
-            // If there are selections, dim non-selected markers
-            // Use the combined check (key-based or direct comparison)
             if (isSelected) {
-              // Selected marker: always use full opacity - use helper method
               this.setMarkerOpacityTo1(markerElement, index);
             } else {
-              // Non-selected marker: dim to lower opacity
               markerElement.style.opacity = "0.3";
             }
           } else {
-            // No selections: all markers should be at full opacity
             markerElement.style.opacity = "1";
           }
         } else {
-          // Marker element not available yet - likely still in a cluster
-          // Store selection state so we can apply it when element becomes available
           if (isSelected) {
             (marker as any)._shouldHaveOpacity1 = true;
             (marker as any)._isSelected = true;
-
-            // Try to get element with a delay in case cluster is expanding/spiderfying
             setTimeout(() => {
               const delayedElement = marker.getElement();
-              if (delayedElement) {
-                this.setMarkerOpacityTo1(delayedElement, index);
-              }
+              if (delayedElement) this.setMarkerOpacityTo1(delayedElement, index);
             }, 300);
           }
-
-          // Wait for marker to be added to map (when it becomes visible outside cluster after spiderfy)
-          // Use once() to avoid multiple listeners - check if already attached
           if (!(marker as any)._opacityListenerAttached) {
             (marker as any)._opacityListenerAttached = true;
             marker.once("add", () => {
               setTimeout(() => {
                 const element = marker.getElement();
                 if (element) {
-                  const markerKey = this.getSelectionIdKey(markerSelectionId);
-                  const selectedKeys = new Set(
-                    selectedIds.map((id) => this.getSelectionIdKey(id))
-                  );
-                  const isSelected =
-                    selectedKeys.has(markerKey) || (marker as any)._isSelected;
-
-                  if (isSelected) {
+                  const mKey = this.getSelectionIdKey(markerSelectionId);
+                  const sKeys = new Set(selectedIds.map((id) => this.getSelectionIdKey(id)));
+                  const isSel = sKeys.has(mKey) || (marker as any)._isSelected;
+                  if (isSel) {
                     this.setMarkerOpacityTo1(element, index);
                   } else {
-                    // Check if there are any selections
-                    if (selectedIds.length > 0) {
-                      element.style.opacity = "0.3";
-                    } else {
-                      element.style.opacity = "1";
-                    }
+                    element.style.opacity = selectedIds.length > 0 ? "0.3" : "1";
                   }
                 }
               }, 50);
@@ -2070,18 +2026,43 @@ export class Visual implements IVisual {
           }
         }
       } else {
-        // Hide marker (not in filtered data)
-        if (this.markerClusterGroup.hasLayer(marker)) {
-          this.markerClusterGroup.removeLayer(marker);
-          hiddenMarkers++;
-        }
+        if (isInCluster) markersToRemove.push(marker);
+        hiddenMarkers++;
       }
     });
 
-    // Update cluster opacity based on selection
-    this.updateClusterOpacity(selectedIds);
+    console.log(`[PBILeaflet]   forEach done in ${(performance.now() - _t0).toFixed(1)}ms — toAdd=${markersToAdd.length}, toRemove=${markersToRemove.length}`);
 
-    // Check empty state after marker visibility update
+    if (markersToRemove.length > 0) {
+      (this.markerClusterGroup as any).removeLayers(markersToRemove);
+    }
+
+    if (markersToAdd.length > 0) {
+      const BATCH = 50;
+      const startT = performance.now();
+      console.log(`[PBILeaflet]   batched addLayers starting — ${markersToAdd.length} markers in batches of ${BATCH}`);
+      let offset = 0;
+      let batchNum = 0;
+      const addBatch = () => {
+        batchNum++;
+        const bt = performance.now();
+        const batch = markersToAdd.slice(offset, offset + BATCH);
+        this.markerClusterGroup.addLayers(batch);
+        console.log(`[PBILeaflet]   batch ${batchNum} done — ${(performance.now() - bt).toFixed(1)}ms`);
+        offset += BATCH;
+        if (offset < markersToAdd.length) {
+          setTimeout(addBatch, 16);
+        } else {
+          console.log(`[PBILeaflet]   batched addLayers done — total ${(performance.now() - startT).toFixed(0)}ms`);
+          this.updateClusterOpacity(selectedIds);
+          this.performEmptyStateCheck();
+        }
+      };
+      setTimeout(addBatch, 0);
+      return;
+    }
+
+    this.updateClusterOpacity(selectedIds);
     this.performEmptyStateCheck();
   }
 
